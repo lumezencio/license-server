@@ -7,8 +7,8 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci
+# Install dependencies with proper permissions
+RUN npm ci && chmod -R 755 node_modules/.bin
 
 # Copy source code
 COPY . .
@@ -17,8 +17,8 @@ COPY . .
 ARG VITE_API_URL=http://localhost:8090
 ENV VITE_API_URL=$VITE_API_URL
 
-# Build the app
-RUN npm run build
+# Build the app with proper permissions
+RUN chmod -R 755 node_modules/.bin && npm run build
 
 # Stage 2: Production with nginx
 FROM nginx:alpine
