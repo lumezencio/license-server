@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list = ["*"]
 
     class Config:
+        extra = "ignore"
         env_file = ".env"
         case_sensitive = True
 
