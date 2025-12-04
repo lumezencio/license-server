@@ -1,0 +1,71 @@
+# License Server - Docker Compose (Production with PostgreSQL)
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: license-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-license_server}
+      POSTGRES_USER: ${DB_USER:-license_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-license_admin} -d ${DB_NAME:-license_server}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - license-network
+
+  # License Server API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: license-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-license_admin}:${DB_PASSWORD:-changeme}@db:5432/${DB_NAME:-license_server}
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-in-production}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      ENVIRONMENT: production
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yourdomain.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8090}:8080"
+    volumes:
+      - ./keys:/app/keys
+    networks:
+      - license-network
+
+  # Frontend Admin Panel
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8090}
+    container_name: license-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5174}:80"
+    depends_on:
+      - api
+    networks:
+      - license-network
+
+volumes:
+  postgres_data:
+
+networks:
+  license-network:
+    driver: bridge

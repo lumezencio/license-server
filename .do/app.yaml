@@ -1,0 +1,65 @@
+# Digital Ocean App Platform - License Server
+name: license-server
+
+# Region: NYC (ou outra região mais próxima)
+region: nyc
+
+# Database
+databases:
+  - engine: PG
+    name: license-db
+    num_nodes: 1
+    size: db-s-dev-database
+    version: "15"
+
+# Backend API
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: your-username/license-server
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8080
+    health_check:
+      http_path: /api/v1/health
+      initial_delay_seconds: 10
+      period_seconds: 30
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${license-db.DATABASE_URL}
+      - key: SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: ENVIRONMENT
+        scope: RUN_TIME
+        value: production
+      - key: ADMIN_EMAIL
+        scope: RUN_TIME
+        type: SECRET
+      - key: ADMIN_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      - key: CORS_ORIGINS
+        scope: RUN_TIME
+        value: '["https://license.yourdomain.com"]'
+
+# Frontend (Static Site)
+static_sites:
+  - name: admin
+    dockerfile_path: frontend/Dockerfile
+    source_dir: /frontend
+    github:
+      repo: your-username/license-server
+      branch: main
+      deploy_on_push: true
+    build_command: npm run build
+    output_dir: dist
+    envs:
+      - key: VITE_API_URL
+        scope: BUILD_TIME
+        value: ${api.PUBLIC_URL}
