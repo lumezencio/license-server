@@ -10,12 +10,13 @@ from app.models.license import LicensePlan, LicenseStatus
 class LicenseCreate(BaseModel):
     client_id: str
     plan: str = LicensePlan.STARTER.value
-    features: List[str] = []
-    max_users: int = Field(5, ge=1, le=1000)
-    max_customers: int = Field(100, ge=1, le=100000)
-    max_products: int = Field(500, ge=1, le=100000)
-    max_monthly_transactions: int = Field(1000, ge=1, le=1000000)
-    expires_at: datetime
+    features: Optional[List[str]] = None
+    max_users: Optional[int] = Field(None, ge=1, le=1000)
+    max_customers: Optional[int] = Field(None, ge=1, le=100000)
+    max_products: Optional[int] = Field(None, ge=1, le=100000)
+    max_monthly_transactions: Optional[int] = Field(None, ge=1, le=1000000)
+    duration_days: int = Field(365, ge=1, le=3650)  # Padrão 1 ano
+    expires_at: Optional[datetime] = None  # Calculado automaticamente se não informado
     is_trial: bool = False
     notes: Optional[str] = None
 

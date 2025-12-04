@@ -2,17 +2,50 @@
 License Server - Licenses API
 CRUD e gerenciamento de licenças
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import License, Client, AdminUser, LicenseStatus
+from app.models import License, Client, AdminUser, LicenseStatus, LicenseValidation
 from app.schemas import LicenseCreate, LicenseUpdate, LicenseResponse
 from app.api.auth import get_current_admin
 from app.core import generate_license_key, rsa_manager
+
+# Limites por plano
+PLAN_LIMITS = {
+    'starter': {
+        'max_users': 3,
+        'max_customers': 100,
+        'max_products': 500,
+        'max_monthly_transactions': 1000,
+        'features': ['basic_reports'],
+    },
+    'professional': {
+        'max_users': 10,
+        'max_customers': 1000,
+        'max_products': 5000,
+        'max_monthly_transactions': 10000,
+        'features': ['reports', 'multi_user', 'api_access', 'support'],
+    },
+    'enterprise': {
+        'max_users': 50,
+        'max_customers': 10000,
+        'max_products': 50000,
+        'max_monthly_transactions': 100000,
+        'features': ['reports', 'multi_user', 'api_access', 'priority_support', 'white_label', 'custom_modules'],
+    },
+    'unlimited': {
+        'max_users': 9999,
+        'max_customers': 999999,
+        'max_products': 999999,
+        'max_monthly_transactions': 9999999,
+        'features': ['all'],
+    },
+}
 
 router = APIRouter(prefix="/licenses", tags=["Licenses"])
 
@@ -29,7 +62,7 @@ async def list_licenses(
     admin: AdminUser = Depends(get_current_admin)
 ):
     """Lista todas as licenças"""
-    query = select(License)
+    query = select(License).options(selectinload(License.client))
 
     if search:
         query = query.where(
@@ -64,7 +97,9 @@ async def get_license(
 ):
     """Retorna uma licença específica"""
     result = await db.execute(
-        select(License).where(License.id == license_id)
+        select(License)
+        .options(selectinload(License.client))
+        .where(License.id == license_id)
     )
     license = result.scalar_one_or_none()
 
@@ -114,16 +149,24 @@ async def create_license(
             break
         license_key = generate_license_key()
 
+    # Obtém limites do plano
+    plan_limits = PLAN_LIMITS.get(request.plan, PLAN_LIMITS['starter'])
+
+    # Calcula data de expiração
+    expires_at = request.expires_at
+    if not expires_at:
+        expires_at = datetime.utcnow() + timedelta(days=request.duration_days)
+
     license = License(
         license_key=license_key,
         client_id=request.client_id,
         plan=request.plan,
-        features=request.features,
-        max_users=request.max_users,
-        max_customers=request.max_customers,
-        max_products=request.max_products,
-        max_monthly_transactions=request.max_monthly_transactions,
-        expires_at=request.expires_at,
+        features=request.features or plan_limits['features'],
+        max_users=request.max_users or plan_limits['max_users'],
+        max_customers=request.max_customers or plan_limits['max_customers'],
+        max_products=request.max_products or plan_limits['max_products'],
+        max_monthly_transactions=request.max_monthly_transactions or plan_limits['max_monthly_transactions'],
+        expires_at=expires_at,
         is_trial=request.is_trial,
         notes=request.notes,
         status=LicenseStatus.PENDING.value
@@ -132,6 +175,14 @@ async def create_license(
     db.add(license)
     await db.commit()
     await db.refresh(license)
+
+    # Recarrega com relacionamento client
+    result = await db.execute(
+        select(License)
+        .options(selectinload(License.client))
+        .where(License.id == license.id)
+    )
+    license = result.scalar_one()
 
     return license.to_dict()
 
@@ -145,7 +196,9 @@ async def update_license(
 ):
     """Atualiza licença"""
     result = await db.execute(
-        select(License).where(License.id == license_id)
+        select(License)
+        .options(selectinload(License.client))
+        .where(License.id == license_id)
     )
     license = result.scalar_one_or_none()
 
@@ -292,3 +345,35 @@ async def download_license_file(
         )
 
     return license.to_license_file()
+
+
+@router.get("/{license_id}/validations")
+async def get_license_validations(
+    license_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """Lista histórico de validações de uma licença"""
+    result = await db.execute(
+        select(License).where(License.id == license_id)
+    )
+    license = result.scalar_one_or_none()
+
+    if not license:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="License not found"
+        )
+
+    result = await db.execute(
+        select(LicenseValidation)
+        .where(LicenseValidation.license_id == license_id)
+        .order_by(LicenseValidation.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    validations = result.scalars().all()
+
+    return [v.to_dict() for v in validations]
