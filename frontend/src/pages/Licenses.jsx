@@ -41,12 +41,24 @@ export default function Licenses() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [viewingLicense, setViewingLicense] = useState(null);
+  const [editingLicense, setEditingLicense] = useState(null);
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     client_id: '',
     plan: 'professional',
     duration_days: '365',
+    notes: '',
+  });
+  const [editFormData, setEditFormData] = useState({
+    plan: '',
+    max_users: '',
+    max_customers: '',
+    max_products: '',
+    max_monthly_transactions: '',
+    expires_at: '',
+    status: '',
     notes: '',
   });
 
@@ -131,6 +143,52 @@ export default function Licenses() {
   const openViewModal = async (license) => {
     setViewingLicense(license);
     setIsViewModalOpen(true);
+  };
+
+  const openEditModal = (license) => {
+    setEditingLicense(license);
+    setEditFormData({
+      plan: license.plan || 'professional',
+      max_users: license.max_users?.toString() || '',
+      max_customers: license.max_customers?.toString() || '',
+      max_products: license.max_products?.toString() || '',
+      max_monthly_transactions: license.max_monthly_transactions?.toString() || '',
+      expires_at: license.expires_at ? license.expires_at.split('T')[0] : '',
+      status: license.status || 'active',
+      notes: license.notes || '',
+    });
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+
+    try {
+      const updateData = {
+        plan: editFormData.plan,
+        max_users: parseInt(editFormData.max_users) || undefined,
+        max_customers: parseInt(editFormData.max_customers) || undefined,
+        max_products: parseInt(editFormData.max_products) || undefined,
+        max_monthly_transactions: parseInt(editFormData.max_monthly_transactions) || undefined,
+        status: editFormData.status,
+        notes: editFormData.notes,
+      };
+
+      // Adiciona expires_at se foi alterado
+      if (editFormData.expires_at) {
+        updateData.expires_at = new Date(editFormData.expires_at + 'T23:59:59').toISOString();
+      }
+
+      await licensesService.update(editingLicense.id, updateData);
+      setIsEditModalOpen(false);
+      loadData();
+    } catch (error) {
+      console.error('Erro ao atualizar licença:', error);
+      alert(error.response?.data?.detail || 'Erro ao atualizar licença');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -315,6 +373,14 @@ export default function Licenses() {
                           icon={Eye}
                           onClick={() => openViewModal(license)}
                           title="Ver detalhes"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={Edit2}
+                          onClick={() => openEditModal(license)}
+                          title="Editar"
+                          className="hover:text-blue-400"
                         />
                         {license.status === 'active' && (
                           <Button
@@ -575,6 +641,148 @@ export default function Licenses() {
               </div>
             )}
           </div>
+        )}
+      </Modal>
+
+      {/* Edit Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        title="Editar Licença"
+        size="lg"
+      >
+        {editingLicense && (
+          <form onSubmit={handleEditSubmit} className="space-y-6">
+            {/* Chave da licença (somente leitura) */}
+            <div className="bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-400/30 rounded-xl p-4 text-center">
+              <p className="text-white/50 text-sm mb-1">Chave da Licença</p>
+              <code className="text-xl font-mono text-blue-300">{editingLicense.license_key}</code>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Select
+                label="Plano"
+                icon={Key}
+                value={editFormData.plan}
+                onChange={(e) => setEditFormData({ ...editFormData, plan: e.target.value })}
+                options={PLAN_OPTIONS}
+              />
+
+              <Select
+                label="Status"
+                value={editFormData.status}
+                onChange={(e) => setEditFormData({ ...editFormData, status: e.target.value })}
+                options={[
+                  { value: 'pending', label: 'Pendente' },
+                  { value: 'active', label: 'Ativa' },
+                  { value: 'suspended', label: 'Suspensa' },
+                  { value: 'expired', label: 'Expirada' },
+                  { value: 'revoked', label: 'Revogada' },
+                ]}
+              />
+
+              <div>
+                <label className="block text-sm font-semibold text-white mb-2">
+                  Data de Expiração
+                </label>
+                <input
+                  type="date"
+                  value={editFormData.expires_at}
+                  onChange={(e) => setEditFormData({ ...editFormData, expires_at: e.target.value })}
+                  className="w-full px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+              </div>
+
+              <Input
+                label="Máx. Usuários"
+                type="number"
+                icon={Users}
+                value={editFormData.max_users}
+                onChange={(e) => setEditFormData({ ...editFormData, max_users: e.target.value })}
+                min="1"
+              />
+
+              <Input
+                label="Máx. Clientes"
+                type="number"
+                value={editFormData.max_customers}
+                onChange={(e) => setEditFormData({ ...editFormData, max_customers: e.target.value })}
+                min="1"
+              />
+
+              <Input
+                label="Máx. Produtos"
+                type="number"
+                value={editFormData.max_products}
+                onChange={(e) => setEditFormData({ ...editFormData, max_products: e.target.value })}
+                min="1"
+              />
+
+              <Input
+                label="Máx. Transações/Mês"
+                type="number"
+                value={editFormData.max_monthly_transactions}
+                onChange={(e) => setEditFormData({ ...editFormData, max_monthly_transactions: e.target.value })}
+                min="1"
+                className="md:col-span-2"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-white mb-2">Observações</label>
+              <textarea
+                value={editFormData.notes}
+                onChange={(e) => setEditFormData({ ...editFormData, notes: e.target.value.toUpperCase() })}
+                rows={3}
+                style={{ textTransform: 'uppercase' }}
+                className="w-full px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="Anotações internas..."
+              />
+            </div>
+
+            {/* Atalhos rápidos para expiração */}
+            <div className="bg-white/5 rounded-xl p-4">
+              <p className="text-white/70 text-sm mb-3">Atalhos de Expiração:</p>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { label: '+30 dias', days: 30 },
+                  { label: '+90 dias', days: 90 },
+                  { label: '+6 meses', days: 180 },
+                  { label: '+1 ano', days: 365 },
+                  { label: 'Expirar agora', days: -1 },
+                ].map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => {
+                      const newDate = new Date();
+                      newDate.setDate(newDate.getDate() + opt.days);
+                      setEditFormData({
+                        ...editFormData,
+                        expires_at: newDate.toISOString().split('T')[0]
+                      });
+                    }}
+                    className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
+                      opt.days < 0
+                        ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
+                        : 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
+              <Button variant="ghost" type="button" onClick={() => setIsEditModalOpen(false)}>
+                Cancelar
+              </Button>
+              <Button type="submit" loading={saving} icon={Edit2}>
+                Salvar Alterações
+              </Button>
+            </div>
+          </form>
         )}
       </Modal>
     </div>
