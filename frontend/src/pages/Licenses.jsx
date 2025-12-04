@@ -3,10 +3,11 @@ import { motion } from 'framer-motion';
 import {
   Key, Plus, Search, Edit2, Copy, Ban, Play, Pause, Eye,
   Calendar, Users, Building2, CheckCircle, XCircle, Clock,
-  AlertTriangle, RefreshCw
+  AlertTriangle, RefreshCw, Trash2
 } from 'lucide-react';
 import Card, { CardContent, CardHeader } from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import Icon3DButton from '../components/ui/Icon3DButton';
 import Input from '../components/ui/Input';
 import Select from '../components/ui/Select';
 import Badge from '../components/ui/Badge';
@@ -264,9 +265,13 @@ export default function Licenses() {
           <h1 className="text-3xl font-bold text-white">Licenças</h1>
           <p className="text-white/60 mt-1">Gerencie as licenças do sistema</p>
         </div>
-        <Button icon={Plus} onClick={openNewModal} disabled={clients.length === 0}>
-          Nova Licença
-        </Button>
+        <Icon3DButton
+          icon={Plus}
+          label="Nova Licença"
+          onClick={openNewModal}
+          disabled={clients.length === 0}
+          variant="success"
+        />
       </div>
 
       {/* Filters */}
@@ -366,50 +371,41 @@ export default function Licenses() {
                       ) : '-'}
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
+                      <div className="flex items-center justify-end gap-2">
+                        <Icon3DButton
                           icon={Eye}
                           onClick={() => openViewModal(license)}
-                          title="Ver detalhes"
+                          variant="cyan"
+                          size="iconOnly"
                         />
-                        <Button
-                          variant="ghost"
-                          size="sm"
+                        <Icon3DButton
                           icon={Edit2}
                           onClick={() => openEditModal(license)}
-                          title="Editar"
-                          className="hover:text-blue-400"
+                          variant="primary"
+                          size="iconOnly"
                         />
                         {license.status === 'active' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
+                          <Icon3DButton
                             icon={Pause}
                             onClick={() => handleSuspend(license)}
-                            title="Suspender"
-                            className="hover:text-amber-400"
+                            variant="amber"
+                            size="iconOnly"
                           />
                         )}
                         {license.status === 'suspended' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
+                          <Icon3DButton
                             icon={Play}
                             onClick={() => handleReactivate(license)}
-                            title="Reativar"
-                            className="hover:text-green-400"
+                            variant="success"
+                            size="iconOnly"
                           />
                         )}
                         {license.status !== 'revoked' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
+                          <Icon3DButton
                             icon={Ban}
                             onClick={() => handleRevoke(license)}
-                            title="Revogar"
-                            className="hover:text-red-400"
+                            variant="danger"
+                            size="iconOnly"
                           />
                         )}
                       </div>
@@ -488,12 +484,19 @@ export default function Licenses() {
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
-            <Button variant="ghost" type="button" onClick={() => setIsModalOpen(false)}>
-              Cancelar
-            </Button>
-            <Button type="submit" loading={saving} icon={Key}>
-              Gerar Licença
-            </Button>
+            <Icon3DButton
+              label="Cancelar"
+              onClick={() => setIsModalOpen(false)}
+              variant="secondary"
+              type="button"
+            />
+            <Icon3DButton
+              icon={Key}
+              label="Gerar Licença"
+              type="submit"
+              disabled={saving}
+              variant="success"
+            />
           </div>
         </form>
       </Modal>
@@ -775,12 +778,19 @@ export default function Licenses() {
             </div>
 
             <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
-              <Button variant="ghost" type="button" onClick={() => setIsEditModalOpen(false)}>
-                Cancelar
-              </Button>
-              <Button type="submit" loading={saving} icon={Edit2}>
-                Salvar Alterações
-              </Button>
+              <Icon3DButton
+                label="Cancelar"
+                onClick={() => setIsEditModalOpen(false)}
+                variant="secondary"
+                type="button"
+              />
+              <Icon3DButton
+                icon={Edit2}
+                label="Salvar Alterações"
+                type="submit"
+                disabled={saving}
+                variant="primary"
+              />
             </div>
           </form>
         )}

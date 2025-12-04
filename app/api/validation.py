@@ -94,6 +94,14 @@ async def activate_license(
             message="License has been revoked"
         )
 
+    # Verifica se licença está suspensa
+    if license.status == LicenseStatus.SUSPENDED.value:
+        return LicenseValidateResponse(
+            valid=False,
+            status="suspended",
+            message="License has been suspended. Contact support."
+        )
+
     # Verifica expiração
     if license.expires_at and datetime.utcnow() > license.expires_at:
         license.status = LicenseStatus.EXPIRED.value
