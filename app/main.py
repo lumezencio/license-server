@@ -40,8 +40,8 @@ app = FastAPI(
     version=settings.APP_VERSION,
     description="Professional License Management System with RSA signatures",
     lifespan=lifespan,
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # CORS
