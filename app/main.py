@@ -13,7 +13,10 @@ from app.api import (
     clients_router,
     licenses_router,
     validation_router,
-    stats_router
+    stats_router,
+    register_router,
+    provisioning_router,
+    tenant_auth_router
 )
 
 
@@ -59,6 +62,9 @@ app.include_router(clients_router, prefix="/api")
 app.include_router(licenses_router, prefix="/api")
 app.include_router(validation_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
+app.include_router(register_router, prefix="/api")
+app.include_router(provisioning_router, prefix="/api")
+app.include_router(tenant_auth_router, prefix="/api")
 
 
 @app.get("/")

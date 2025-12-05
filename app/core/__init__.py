@@ -10,6 +10,8 @@ from .security import (
     verify_password,
     get_password_hash
 )
+from .email import email_service, EmailService
+from .provisioning import provisioning_service, TenantProvisioningService, ProvisioningError
 
 __all__ = [
     "settings",
@@ -22,5 +24,10 @@ __all__ = [
     "create_signed_license",
     "verify_license",
     "verify_password",
-    "get_password_hash"
+    "get_password_hash",
+    "email_service",
+    "EmailService",
+    "provisioning_service",
+    "TenantProvisioningService",
+    "ProvisioningError"
 ]

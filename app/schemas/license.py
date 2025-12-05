@@ -37,23 +37,23 @@ class LicenseResponse(BaseModel):
     id: str
     license_key: str
     client_id: str
-    client_name: Optional[str]
-    hardware_id: Optional[str]
-    plan: str
-    features: List[str]
-    max_users: int
-    max_customers: int
-    max_products: int
-    max_monthly_transactions: int
-    issued_at: Optional[datetime]
-    activated_at: Optional[datetime]
-    expires_at: Optional[datetime]
-    last_validated_at: Optional[datetime]
-    status: str
-    is_trial: bool
-    is_valid: bool
-    days_until_expiry: int
-    created_at: Optional[datetime]
+    client_name: Optional[str] = None
+    hardware_id: Optional[str] = None
+    plan: Optional[str] = "starter"
+    features: Optional[List[str]] = []
+    max_users: Optional[int] = 1
+    max_customers: Optional[int] = 100
+    max_products: Optional[int] = 100
+    max_monthly_transactions: Optional[int] = 1000
+    issued_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    last_validated_at: Optional[datetime] = None
+    status: Optional[str] = "active"
+    is_trial: Optional[bool] = False
+    is_valid: Optional[bool] = True
+    days_until_expiry: Optional[int] = 0
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

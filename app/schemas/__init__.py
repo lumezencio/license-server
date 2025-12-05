@@ -9,6 +9,15 @@ from .license import (
     LicenseFileResponse
 )
 from .auth import LoginRequest, LoginResponse, AdminUserCreate, AdminUserResponse
+from .tenant import (
+    TenantRegisterRequest,
+    TenantRegisterResponse,
+    TenantResponse,
+    TenantActivateRequest,
+    TenantLoginRequest,
+    TenantLoginResponse,
+    TenantDatabaseInfo
+)
 
 __all__ = [
     "ClientCreate",
@@ -24,5 +33,12 @@ __all__ = [
     "LoginRequest",
     "LoginResponse",
     "AdminUserCreate",
-    "AdminUserResponse"
+    "AdminUserResponse",
+    "TenantRegisterRequest",
+    "TenantRegisterResponse",
+    "TenantResponse",
+    "TenantActivateRequest",
+    "TenantLoginRequest",
+    "TenantLoginResponse",
+    "TenantDatabaseInfo"
 ]

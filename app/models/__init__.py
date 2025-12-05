@@ -1,6 +1,7 @@
 from .client import Client
 from .license import License, LicenseValidation, LicensePlan, LicenseStatus
 from .admin import AdminUser
+from .tenant import Tenant, TenantStatus
 
 __all__ = [
     "Client",
@@ -8,5 +9,7 @@ __all__ = [
     "LicenseValidation",
     "LicensePlan",
     "LicenseStatus",
-    "AdminUser"
+    "AdminUser",
+    "Tenant",
+    "TenantStatus"
 ]
