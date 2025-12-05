@@ -36,18 +36,18 @@ class ClientUpdate(BaseModel):
 class ClientResponse(BaseModel):
     id: str
     name: str
-    document: Optional[str]
+    document: Optional[str] = None
     email: str
-    phone: Optional[str]
-    contact_name: Optional[str]
-    address: Optional[str]
-    city: Optional[str]
-    state: Optional[str]
-    country: str
-    is_active: bool
-    notes: Optional[str]
-    created_at: Optional[datetime]
-    updated_at: Optional[datetime]
+    phone: Optional[str] = None
+    contact_name: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = "Brasil"
+    is_active: bool = True
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     licenses_count: int = 0
 
     class Config:
