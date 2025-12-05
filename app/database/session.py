@@ -8,7 +8,7 @@ from app.core.config import settings
 
 # Engine assíncrono
 engine = create_async_engine(
-    settings.LICENSE_DATABASE_URL,
+    settings.db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
 )

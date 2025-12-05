@@ -18,8 +18,14 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8080
 
-    # Database (use LICENSE_DATABASE_URL to avoid conflict with other projects)
+    # Database (accepts DATABASE_URL or LICENSE_DATABASE_URL)
+    DATABASE_URL: Optional[str] = None
     LICENSE_DATABASE_URL: str = "sqlite+aiosqlite:///./licenses.db"
+
+    @property
+    def db_url(self) -> str:
+        """Returns DATABASE_URL if set, otherwise LICENSE_DATABASE_URL"""
+        return self.DATABASE_URL or self.LICENSE_DATABASE_URL
 
     # Security
     SECRET_KEY: str = secrets.token_urlsafe(32)
