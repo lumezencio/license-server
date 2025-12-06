@@ -46,6 +46,7 @@ class TenantLoginResponse(BaseModel):
     license_expires_at: Optional[datetime] = None
     license_status: Optional[str] = None
     license_days_remaining: Optional[int] = None
+    license_key: Optional[str] = None
 
 
 class TenantInfoResponse(BaseModel):
@@ -267,7 +268,8 @@ async def tenant_login(
                 "expires_at": license.expires_at,
                 "status": license.status,
                 "days_remaining": license.days_until_expiry(),
-                "is_trial": license.is_trial
+                "is_trial": license.is_trial,
+                "license_key": license.license_key
             }
 
             if license.status == LicenseStatus.SUSPENDED.value:
@@ -368,7 +370,8 @@ async def tenant_login(
         license_plan=license_info["plan"] if license_info else None,
         license_expires_at=license_info["expires_at"] if license_info else None,
         license_status=license_info["status"] if license_info else None,
-        license_days_remaining=license_info["days_remaining"] if license_info else None
+        license_days_remaining=license_info["days_remaining"] if license_info else None,
+        license_key=license_info["license_key"] if license_info else None
     )
 
 
