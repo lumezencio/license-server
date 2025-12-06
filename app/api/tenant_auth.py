@@ -63,6 +63,9 @@ async def verify_tenant_user(
 ) -> Optional[dict]:
     """
     Verifica credenciais do usuario no banco do tenant.
+    Suporta dois esquemas de banco:
+    - Novo (tenants provisionados): password_hash, name, is_admin, must_change_password
+    - Legado (enterprise_db): hashed_password, full_name, role
 
     Returns:
         dict com dados do usuario se autenticado, None caso contrario
@@ -77,12 +80,27 @@ async def verify_tenant_user(
         )
 
         try:
-            # Busca usuario por email
+            # Primeiro tenta o esquema novo (tenants provisionados)
             user = await conn.fetchrow("""
                 SELECT id, email, password_hash, name, is_active, is_admin, must_change_password
                 FROM users
                 WHERE email = $1
             """, email.lower())
+
+            schema_type = 'new'
+
+            # Se falhar, tenta o esquema legado (enterprise_db)
+            if user is None:
+                try:
+                    user = await conn.fetchrow("""
+                        SELECT id, email, hashed_password as password_hash, full_name as name,
+                               is_active, role, COALESCE(false, false) as must_change_password
+                        FROM users
+                        WHERE email = $1 AND deleted_at IS NULL
+                    """, email.lower())
+                    schema_type = 'legacy'
+                except Exception:
+                    pass
 
             if not user:
                 return None
@@ -90,22 +108,54 @@ async def verify_tenant_user(
             if not user['is_active']:
                 return None
 
-            # Verifica senha (SHA256)
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
-            if user['password_hash'] != password_hash:
+            # Verifica senha baseado no tipo de esquema
+            password_valid = False
+            if schema_type == 'new':
+                # Esquema novo usa SHA256
+                password_hash = hashlib.sha256(password.encode()).hexdigest()
+                password_valid = user['password_hash'] == password_hash
+            else:
+                # Esquema legado usa bcrypt
+                import bcrypt
+                try:
+                    password_valid = bcrypt.checkpw(
+                        password.encode(),
+                        user['password_hash'].encode()
+                    )
+                except Exception:
+                    password_valid = False
+
+            if not password_valid:
                 return None
 
             # Atualiza last_login
-            await conn.execute("""
-                UPDATE users SET last_login = $1 WHERE id = $2
-            """, datetime.utcnow(), user['id'])
+            try:
+                if schema_type == 'new':
+                    await conn.execute("""
+                        UPDATE users SET last_login = $1 WHERE id = $2
+                    """, datetime.utcnow(), user['id'])
+                else:
+                    await conn.execute("""
+                        UPDATE users SET last_login_at = $1 WHERE id = $2
+                    """, datetime.utcnow(), user['id'])
+            except Exception:
+                pass  # Ignora erro ao atualizar last_login
+
+            # Determina is_admin baseado no esquema
+            is_admin = False
+            if schema_type == 'new':
+                is_admin = user['is_admin']
+            else:
+                # No esquema legado, verifica pelo role
+                role = user.get('role', '')
+                is_admin = role in ['admin', 'superadmin']
 
             return {
                 "id": str(user['id']),
                 "email": user['email'],
                 "name": user['name'],
-                "is_admin": user['is_admin'],
-                "must_change_password": user['must_change_password']
+                "is_admin": is_admin,
+                "must_change_password": user['must_change_password'] or False
             }
 
         finally:
