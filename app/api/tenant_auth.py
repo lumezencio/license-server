@@ -41,6 +41,11 @@ class TenantLoginResponse(BaseModel):
     requires_password_change: bool = False
     is_trial: bool = False
     trial_expires_at: Optional[datetime] = None
+    # Dados da licença real
+    license_plan: Optional[str] = None
+    license_expires_at: Optional[datetime] = None
+    license_status: Optional[str] = None
+    license_days_remaining: Optional[int] = None
 
 
 class TenantInfoResponse(BaseModel):
@@ -55,6 +60,8 @@ class TenantInfoResponse(BaseModel):
 
 
 async def verify_tenant_user(
+    database_host: str,
+    database_port: int,
     database_name: str,
     database_user: str,
     database_password: str,
@@ -71,25 +78,33 @@ async def verify_tenant_user(
         dict com dados do usuario se autenticado, None caso contrario
     """
     try:
+        logger.info(f"Conectando ao banco {database_name} em {database_host}:{database_port} como {database_user}")
         conn = await asyncpg.connect(
-            host=settings.POSTGRES_HOST,
-            port=settings.POSTGRES_PORT,
+            host=database_host,
+            port=database_port,
             user=database_user,
             password=database_password,
             database=database_name
         )
 
         try:
+            user = None
+            schema_type = None
+
             # Primeiro tenta o esquema novo (tenants provisionados)
-            user = await conn.fetchrow("""
-                SELECT id, email, password_hash, name, is_active, is_admin, must_change_password
-                FROM users
-                WHERE email = $1
-            """, email.lower())
+            try:
+                user = await conn.fetchrow("""
+                    SELECT id, email, password_hash, name, is_active, is_admin, must_change_password
+                    FROM users
+                    WHERE email = $1
+                """, email.lower())
+                if user:
+                    schema_type = 'new'
+                    logger.info(f"Usuario encontrado no esquema novo: {email}")
+            except Exception as e:
+                logger.info(f"Esquema novo falhou (esperado para bancos legados): {e}")
 
-            schema_type = 'new'
-
-            # Se falhar, tenta o esquema legado (enterprise_db)
+            # Se nao encontrou, tenta o esquema legado (enterprise_db)
             if user is None:
                 try:
                     user = await conn.fetchrow("""
@@ -98,9 +113,11 @@ async def verify_tenant_user(
                         FROM users
                         WHERE email = $1 AND deleted_at IS NULL
                     """, email.lower())
-                    schema_type = 'legacy'
-                except Exception:
-                    pass
+                    if user:
+                        schema_type = 'legacy'
+                        logger.info(f"Usuario encontrado no esquema legado: {email}")
+                except Exception as e:
+                    logger.error(f"Esquema legado tambem falhou: {e}")
 
             if not user:
                 return None
@@ -236,6 +253,7 @@ async def tenant_login(
             )
 
     # 4. Verifica licenca
+    license_info = None
     if tenant.client_id:
         license_result = await db.execute(
             select(License).where(License.client_id == tenant.client_id)
@@ -243,6 +261,15 @@ async def tenant_login(
         license = license_result.scalar_one_or_none()
 
         if license:
+            # Guarda info da licença para retornar
+            license_info = {
+                "plan": license.plan,
+                "expires_at": license.expires_at,
+                "status": license.status,
+                "days_remaining": license.days_until_expiry(),
+                "is_trial": license.is_trial
+            }
+
             if license.status == LicenseStatus.SUSPENDED.value:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -269,6 +296,8 @@ async def tenant_login(
     # 6. Verifica credenciais no banco do tenant
     # Primeiro tentativa: senha informada
     user = await verify_tenant_user(
+        tenant.database_host or settings.POSTGRES_HOST,
+        tenant.database_port or settings.POSTGRES_PORT,
         tenant.database_name,
         tenant.database_user,
         tenant.database_password,
@@ -280,6 +309,8 @@ async def tenant_login(
     if not user and not tenant.password_changed:
         # Primeira tentativa com o documento puro
         user = await verify_tenant_user(
+            tenant.database_host or settings.POSTGRES_HOST,
+            tenant.database_port or settings.POSTGRES_PORT,
             tenant.database_name,
             tenant.database_user,
             tenant.database_password,
@@ -317,6 +348,9 @@ async def tenant_login(
     # Por enquanto, usa o mesmo backend com header de tenant
     api_url = f"{settings.APP_URL}/api/v1"
 
+    # Determina is_trial baseado na licença (prioritário) ou tenant
+    is_trial_final = license_info["is_trial"] if license_info else tenant.is_trial
+
     return TenantLoginResponse(
         success=True,
         message="Login realizado com sucesso",
@@ -328,8 +362,13 @@ async def tenant_login(
         token_type="bearer",
         user=user,
         requires_password_change=user.get("must_change_password", False),
-        is_trial=tenant.is_trial,
-        trial_expires_at=tenant.trial_expires_at
+        is_trial=is_trial_final,
+        trial_expires_at=tenant.trial_expires_at,
+        # Dados da licença real
+        license_plan=license_info["plan"] if license_info else None,
+        license_expires_at=license_info["expires_at"] if license_info else None,
+        license_status=license_info["status"] if license_info else None,
+        license_days_remaining=license_info["days_remaining"] if license_info else None
     )
 
 
@@ -393,6 +432,8 @@ async def change_tenant_password(
 
     # Verifica senha atual
     user = await verify_tenant_user(
+        tenant.database_host or settings.POSTGRES_HOST,
+        tenant.database_port or settings.POSTGRES_PORT,
         tenant.database_name,
         tenant.database_user,
         tenant.database_password,
@@ -416,8 +457,8 @@ async def change_tenant_password(
     # Atualiza senha no banco do tenant
     try:
         conn = await asyncpg.connect(
-            host=settings.POSTGRES_HOST,
-            port=settings.POSTGRES_PORT,
+            host=tenant.database_host or settings.POSTGRES_HOST,
+            port=tenant.database_port or settings.POSTGRES_PORT,
             user=tenant.database_user,
             password=tenant.database_password,
             database=tenant.database_name
