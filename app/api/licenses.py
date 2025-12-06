@@ -2,7 +2,7 @@
 License Server - Licenses API
 CRUD e gerenciamento de licenças
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -155,7 +155,10 @@ async def create_license(
     # Calcula data de expiração
     expires_at = request.expires_at
     if not expires_at:
-        expires_at = datetime.utcnow() + timedelta(days=request.duration_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=request.duration_days)
+    # Remove timezone info para armazenar como naive UTC no PostgreSQL
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
 
     license = License(
         license_key=license_key,
@@ -211,6 +214,11 @@ async def update_license(
     update_data = request.model_dump(exclude_unset=True)
 
     for field, value in update_data.items():
+        # Normaliza datetime para UTC se tiver timezone
+        if field == 'expires_at' and value is not None:
+            if hasattr(value, 'tzinfo') and value.tzinfo is not None:
+                # Remove timezone info, PostgreSQL vai armazenar como naive UTC
+                value = value.replace(tzinfo=None)
         setattr(license, field, value)
 
     # Regenera assinatura se licença está ativa
