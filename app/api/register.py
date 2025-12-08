@@ -3,10 +3,11 @@ License Server - Registration API
 Endpoint público para auto-registro de tenants (trial)
 """
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import hashlib
+import logging
 
 from app.database import get_db
 from app.models import Client, License, Tenant, TenantStatus, LicenseStatus
@@ -16,6 +17,9 @@ from app.schemas import (
     TenantResponse
 )
 from app.core import generate_license_key, email_service, settings
+from app.core.provisioning import provisioning_service, ProvisioningError
+
+logger = logging.getLogger(__name__)
 
 # Limites do plano trial
 TRIAL_LIMITS = {
@@ -28,10 +32,76 @@ TRIAL_LIMITS = {
 
 router = APIRouter(prefix="/register", tags=["Registration"])
 
+# Host do banco de dados dos tenants (nome do container Docker)
+TENANT_DATABASE_HOST = "enterprise-db"
+
+
+async def provision_tenant_background(
+    tenant_id: int,
+    tenant_code: str,
+    database_name: str,
+    database_user: str,
+    database_password: str,
+    admin_email: str,
+    admin_password: str,
+    admin_name: str,
+    license_id: int
+):
+    """
+    Executa o provisionamento do tenant em background.
+    Atualiza o status do tenant e licença após conclusão.
+    """
+    from app.database import AsyncSessionLocal
+
+    try:
+        logger.info(f"Iniciando provisionamento do tenant {tenant_code}")
+
+        # Executa o provisionamento
+        success, message = await provisioning_service.provision_tenant(
+            tenant_code=tenant_code,
+            database_name=database_name,
+            database_user=database_user,
+            database_password=database_password,
+            admin_email=admin_email,
+            admin_password=admin_password,
+            admin_name=admin_name
+        )
+
+        async with AsyncSessionLocal() as db:
+            if success:
+                # Atualiza tenant para TRIAL (ativo)
+                tenant = await db.get(Tenant, tenant_id)
+                if tenant:
+                    tenant.status = TenantStatus.TRIAL.value
+                    tenant.provisioned_at = datetime.utcnow()
+                    tenant.activated_at = datetime.utcnow()
+                    tenant.database_host = TENANT_DATABASE_HOST
+
+                # Atualiza licença para ACTIVE
+                license_obj = await db.get(License, license_id)
+                if license_obj:
+                    license_obj.status = LicenseStatus.ACTIVE.value
+                    license_obj.activated_at = datetime.utcnow()
+
+                await db.commit()
+                logger.info(f"Tenant {tenant_code} provisionado com sucesso!")
+            else:
+                # Marca como erro no provisionamento
+                tenant = await db.get(Tenant, tenant_id)
+                if tenant:
+                    tenant.status = TenantStatus.ERROR.value
+                    tenant.notes = f"Erro no provisionamento: {message}"
+                await db.commit()
+                logger.error(f"Erro no provisionamento do tenant {tenant_code}: {message}")
+
+    except Exception as e:
+        logger.error(f"Erro inesperado no provisionamento: {e}")
+
 
 @router.post("/trial", response_model=TenantRegisterResponse)
 async def register_trial(
     request: TenantRegisterRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -89,6 +159,7 @@ async def register_trial(
         database_name=database_name,
         database_user=database_user,
         database_password=database_password,
+        database_host=TENANT_DATABASE_HOST,  # Host correto do container Docker
         initial_password_hash=initial_password_hash,
         status=TenantStatus.PENDING.value,
         is_trial=True,
@@ -152,8 +223,25 @@ async def register_trial(
     # 10. Commit de tudo
     await db.commit()
     await db.refresh(tenant)
+    await db.refresh(license)
 
-    # 11. Envia email de boas-vindas com credenciais
+    # 11. Agenda provisionamento do banco de dados em background
+    background_tasks.add_task(
+        provision_tenant_background,
+        tenant_id=tenant.id,
+        tenant_code=tenant_code,
+        database_name=database_name,
+        database_user=database_user,
+        database_password=database_password,
+        admin_email=request.email,
+        admin_password=request.document,  # CPF/CNPJ como senha inicial
+        admin_name=request.name,
+        license_id=license.id
+    )
+
+    logger.info(f"Tenant {tenant_code} registrado. Provisionamento agendado em background.")
+
+    # 12. Envia email de boas-vindas com credenciais
     login_url = f"{settings.LOGIN_URL}?tenant={tenant_code}"
     email_service.send_welcome_email(
         to_email=request.email,
@@ -165,7 +253,7 @@ async def register_trial(
         login_url=login_url
     )
 
-    # 12. Retorna resposta com credenciais
+    # 13. Retorna resposta com credenciais
     return TenantRegisterResponse(
         success=True,
         message="Cadastro realizado com sucesso! Você receberá um e-mail com as instruções de acesso.",

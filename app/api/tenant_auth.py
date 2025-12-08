@@ -200,11 +200,37 @@ async def tenant_login(
     """
     email = request.email.lower()
 
-    # 1. Busca tenant pelo email
+    # 1. Busca tenant pelo email principal
     result = await db.execute(
         select(Tenant).where(Tenant.email == email)
     )
     tenant = result.scalar_one_or_none()
+
+    # 1b. Se nao encontrou pelo email principal, busca usuario em todos os tenants ativos
+    if not tenant:
+        # Busca tenants ativos e provisionados
+        tenants_result = await db.execute(
+            select(Tenant).where(
+                Tenant.provisioned_at.isnot(None),
+                Tenant.status.in_([TenantStatus.ACTIVE.value, TenantStatus.TRIAL.value])
+            )
+        )
+        active_tenants = tenants_result.scalars().all()
+
+        # Tenta encontrar o usuario em cada tenant
+        for t in active_tenants:
+            user = await verify_tenant_user(
+                t.database_host or settings.POSTGRES_HOST,
+                t.database_port or settings.POSTGRES_PORT,
+                t.database_name,
+                t.database_user,
+                t.database_password,
+                email,
+                request.password
+            )
+            if user:
+                tenant = t
+                break
 
     if not tenant:
         raise HTTPException(
@@ -346,9 +372,8 @@ async def tenant_login(
     )
 
     # 8. Monta URL da API do tenant
-    # Em producao, cada tenant tera seu proprio endpoint
-    # Por enquanto, usa o mesmo backend com header de tenant
-    api_url = f"{settings.APP_URL}/api/v1"
+    # Usa api_url especifico do tenant se configurado, senao usa APP_URL padrao
+    api_url = tenant.api_url if tenant.api_url else f"{settings.APP_URL}/api/v1"
 
     # Determina is_trial baseado na licença (prioritário) ou tenant
     is_trial_final = license_info["is_trial"] if license_info else tenant.is_trial
