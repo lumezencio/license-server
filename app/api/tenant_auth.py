@@ -372,14 +372,16 @@ async def tenant_login(
     )
 
     # 8. Monta URL da API do tenant
-    # Usa custom_domain ou subdomain se configurado, senao usa proxy via frontend principal
+    # SISTEMA MULTI-TENANT: Usa API Gateway centralizado no License Server
+    # O gateway autentica pelo JWT e roteia para o banco correto do tenant
     if tenant.custom_domain:
         api_url = f"https://{tenant.custom_domain}/api/v1"
     elif tenant.subdomain:
         api_url = f"https://{tenant.subdomain}.tech-emp.com/api/v1"
     else:
-        # Usa proxy do frontend principal: /tenant-api/{tenant_code}/
-        api_url = f"https://www.tech-emp.com/tenant-api/{tenant.tenant_code}"
+        # Usa API Gateway multi-tenant no License Server
+        # Todas as requisicoes vao para /api/gateway/* e sao roteadas pelo tenant do token JWT
+        api_url = f"https://license.tech-emp.com/api/gateway"
 
     # Determina is_trial baseado na licença (prioritário) ou tenant
     is_trial_final = license_info["is_trial"] if license_info else tenant.is_trial
