@@ -862,3 +862,341 @@ async def list_legal_calculations(
         return [row_to_dict(row) for row in rows]
     finally:
         await conn.close()
+
+
+# === ENDPOINTS - AUTH ===
+
+@router.get("/auth/me")
+async def get_current_user(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna dados do usuario logado"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow(
+            "SELECT id, email, name, is_admin, is_active FROM users WHERE id::text = $1",
+            user["user_id"]
+        )
+        if row:
+            return row_to_dict(row)
+        # Fallback com dados do token
+        return {
+            "id": user["user_id"],
+            "email": user["email"],
+            "name": user["email"].split("@")[0],
+            "is_admin": user["is_admin"],
+            "is_active": True
+        }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - USERS ===
+
+@router.get("/users")
+async def list_users(
+    skip: int = 0,
+    limit: int = 100,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista usuarios do tenant"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        rows = await conn.fetch("""
+            SELECT id, email, name, is_admin, is_active, created_at
+            FROM users
+            ORDER BY name
+            LIMIT $1 OFFSET $2
+        """, limit, skip)
+
+        return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+@router.get("/users/roles")
+async def list_user_roles(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista roles disponiveis"""
+    return [
+        {"id": "admin", "name": "Administrador"},
+        {"id": "manager", "name": "Gerente"},
+        {"id": "user", "name": "Usuario"}
+    ]
+
+
+@router.get("/users/permissions")
+async def list_user_permissions(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista permissoes disponiveis"""
+    return []
+
+
+# === ENDPOINTS - DASHBOARD OVERVIEW ===
+
+@router.get("/dashboard/overview")
+async def get_dashboard_overview(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna visao geral do dashboard"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Contagens basicas
+        customers_count = await conn.fetchval("SELECT COUNT(*) FROM customers") or 0
+        products_count = await conn.fetchval("SELECT COUNT(*) FROM products") or 0
+        suppliers_count = await conn.fetchval("SELECT COUNT(*) FROM suppliers") or 0
+        employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees") or 0
+
+        # Vendas do mes
+        sales_month = await conn.fetchval("""
+            SELECT COALESCE(SUM(total), 0) FROM sales
+            WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
+        """) or 0
+
+        # Contas a receber pendentes
+        receivables_pending = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status = 'pending'
+        """) or 0
+
+        # Contas a pagar pendentes
+        payables_pending = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status = 'pending'
+        """) or 0
+
+        return {
+            "customers_count": customers_count,
+            "products_count": products_count,
+            "suppliers_count": suppliers_count,
+            "employees_count": employees_count,
+            "sales_month": float(sales_month),
+            "accounts_receivable": float(receivables_pending),
+            "accounts_payable": float(payables_pending),
+            "revenue_today": 0.0,
+            "revenue_week": 0.0,
+            "revenue_month": float(sales_month),
+            "pending_orders": 0,
+            "low_stock_products": 0
+        }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - ACCOUNTS RECEIVABLE STATS ===
+
+@router.get("/accounts-receivable/stats/summary")
+async def get_accounts_receivable_summary(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna resumo de contas a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable") or 0
+        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable") or 0
+        pending = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status = 'pending'
+        """) or 0
+        overdue = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status = 'pending' AND due_date < CURRENT_DATE
+        """) or 0
+
+        return {
+            "total": float(total),
+            "paid": float(paid),
+            "pending": float(pending),
+            "overdue": float(overdue),
+            "count_total": await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0,
+            "count_pending": await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status = 'pending'") or 0,
+            "count_paid": await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status = 'paid'") or 0
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-receivable/stats/detailed")
+async def get_accounts_receivable_detailed(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna estatisticas detalhadas de contas a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable") or 0
+        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable") or 0
+        pending = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status = 'pending'
+        """) or 0
+
+        return {
+            "total_value": float(total),
+            "received_value": float(paid),
+            "pending_value": float(pending),
+            "overdue_value": 0.0,
+            "average_ticket": 0.0,
+            "receive_rate": (float(paid) / float(total) * 100) if total > 0 else 0
+        }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - ACCOUNTS PAYABLE STATS ===
+
+@router.get("/accounts-payable/stats/summary")
+async def get_accounts_payable_summary(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna resumo de contas a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable") or 0
+        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_payable") or 0
+        pending = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status = 'pending'
+        """) or 0
+        overdue = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status = 'pending' AND due_date < CURRENT_DATE
+        """) or 0
+
+        return {
+            "total": float(total),
+            "paid": float(paid),
+            "pending": float(pending),
+            "overdue": float(overdue),
+            "count_total": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable") or 0,
+            "count_pending": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status = 'pending'") or 0,
+            "count_paid": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status = 'paid'") or 0
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-payable/stats/detailed")
+async def get_accounts_payable_detailed(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna estatisticas detalhadas de contas a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable") or 0
+        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_payable") or 0
+        pending = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status = 'pending'
+        """) or 0
+
+        return {
+            "total_value": float(total),
+            "paid_value": float(paid),
+            "pending_value": float(pending),
+            "overdue_value": 0.0,
+            "average_ticket": 0.0
+        }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - COMPANY ALIASES ===
+
+@router.get("/company/current")
+async def get_company_current(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna dados da empresa (alias para /company)"""
+    return await get_company(tenant_data)
+
+
+# === ENDPOINTS - REPORTS ===
+
+@router.get("/reports/company-info")
+async def get_reports_company_info(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna info da empresa para relatorios"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("SELECT * FROM company LIMIT 1")
+        if row:
+            return row_to_dict(row)
+        # Fallback com dados do tenant
+        return {
+            "id": None,
+            "name": tenant.name,
+            "trade_name": tenant.trade_name,
+            "document": tenant.document,
+            "phone": tenant.phone,
+            "email": tenant.email,
+            "logo_url": None
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/customers/list")
+async def get_reports_customers_list(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista clientes para relatorios"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        rows = await conn.fetch("""
+            SELECT id, name, document, email, phone
+            FROM customers
+            ORDER BY name
+            LIMIT 1000
+        """)
+        return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - PRODUCTS STATS ===
+
+@router.get("/products/stats/dashboard")
+async def get_products_stats(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna estatisticas de produtos"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        total = await conn.fetchval("SELECT COUNT(*) FROM products") or 0
+        active = await conn.fetchval("SELECT COUNT(*) FROM products WHERE is_active = true") or 0
+        low_stock = await conn.fetchval("""
+            SELECT COUNT(*) FROM products WHERE stock_quantity <= min_stock AND min_stock > 0
+        """) or 0
+
+        return {
+            "total_products": total,
+            "active_products": active,
+            "inactive_products": total - active,
+            "low_stock_products": low_stock,
+            "total_stock_value": 0.0
+        }
+    finally:
+        await conn.close()
