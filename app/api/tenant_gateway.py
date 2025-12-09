@@ -742,10 +742,12 @@ async def list_purchases(
 # === ENDPOINTS - ACCOUNTS RECEIVABLE ===
 
 @router.get("/accounts-receivable")
+@router.get("/accounts-receivable/")
 async def list_accounts_receivable(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
+    search: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Lista contas a receber do tenant"""
@@ -753,7 +755,19 @@ async def list_accounts_receivable(
     conn = await get_tenant_connection(tenant)
 
     try:
-        if status:
+        # Conta total para paginacao
+        total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
+
+        if search:
+            rows = await conn.fetch("""
+                SELECT ar.*, c.name as customer_name
+                FROM accounts_receivable ar
+                LEFT JOIN customers c ON ar.customer_id = c.id
+                WHERE c.name ILIKE $1 OR ar.description ILIKE $1
+                ORDER BY ar.due_date
+                LIMIT $2 OFFSET $3
+            """, f"%{search}%", limit, skip)
+        elif status:
             rows = await conn.fetch("""
                 SELECT ar.*, c.name as customer_name
                 FROM accounts_receivable ar
@@ -771,7 +785,210 @@ async def list_accounts_receivable(
                 LIMIT $1 OFFSET $2
             """, limit, skip)
 
-        return [row_to_dict(row) for row in rows]
+        items = [row_to_dict(row) for row in rows]
+        return {"items": items, "total": total}
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-receivable/{account_id}")
+async def get_account_receivable(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Busca conta a receber por ID"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            SELECT ar.*, c.name as customer_name
+            FROM accounts_receivable ar
+            LEFT JOIN customers c ON ar.customer_id = c.id
+            WHERE ar.id = $1
+        """, account_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.post("/accounts-receivable")
+@router.post("/accounts-receivable/")
+async def create_account_receivable(
+    account: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria conta a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            INSERT INTO accounts_receivable (
+                customer_id, description, amount, paid_amount, due_date, status,
+                installment_number, total_installments, parent_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+        """,
+            account.get("customer_id"),
+            account.get("description", ""),
+            float(account.get("amount", 0)),
+            float(account.get("paid_amount", 0)),
+            account.get("due_date"),
+            account.get("status", "pending"),
+            account.get("installment_number", 0),
+            account.get("total_installments", 1),
+            account.get("parent_id")
+        )
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.put("/accounts-receivable/{account_id}")
+async def update_account_receivable(
+    account_id: str,
+    account: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza conta a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            UPDATE accounts_receivable SET
+                customer_id = $2, description = $3, amount = $4, paid_amount = $5,
+                due_date = $6, status = $7, updated_at = $8
+            WHERE id = $1
+            RETURNING *
+        """,
+            account_id,
+            account.get("customer_id"),
+            account.get("description", ""),
+            float(account.get("amount", 0)),
+            float(account.get("paid_amount", 0)),
+            account.get("due_date"),
+            account.get("status", "pending"),
+            datetime.utcnow()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.delete("/accounts-receivable/{account_id}")
+async def delete_account_receivable(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Remove conta a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        result = await conn.execute("DELETE FROM accounts_receivable WHERE id = $1", account_id)
+        if result == "DELETE 0":
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+        return {"success": True, "message": "Conta removida"}
+    finally:
+        await conn.close()
+
+
+@router.post("/accounts-receivable/{account_id}/pay")
+async def pay_account_receivable(
+    account_id: str,
+    payment: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Registra pagamento de conta a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca conta atual
+        row = await conn.fetchrow("SELECT * FROM accounts_receivable WHERE id = $1", account_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+
+        payment_amount = float(payment.get("payment_amount", 0))
+        current_paid = float(row["paid_amount"] or 0)
+        total_amount = float(row["amount"])
+        new_paid = current_paid + payment_amount
+
+        # Determina novo status
+        new_status = "paid" if new_paid >= total_amount else "partial"
+
+        # Atualiza conta
+        updated = await conn.fetchrow("""
+            UPDATE accounts_receivable SET
+                paid_amount = $2, status = $3, payment_date = $4, updated_at = $5
+            WHERE id = $1
+            RETURNING *
+        """, account_id, new_paid, new_status, payment.get("payment_date"), datetime.utcnow())
+
+        return row_to_dict(updated)
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-receivable/customers/{customer_id}")
+async def get_customer_for_receivable(
+    customer_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Busca dados do cliente para conta a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow(
+            "SELECT id, name, document as cpf_cnpj, email, phone FROM customers WHERE id = $1",
+            customer_id
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.post("/accounts-receivable/bulk")
+async def create_bulk_accounts_receivable(
+    data: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria multiplas contas a receber (parcelamento)"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        accounts = data.get("accounts", [])
+        created = []
+        for acc in accounts:
+            row = await conn.fetchrow("""
+                INSERT INTO accounts_receivable (
+                    customer_id, description, amount, paid_amount, due_date, status,
+                    installment_number, total_installments, parent_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING *
+            """,
+                acc.get("customer_id"),
+                acc.get("description", ""),
+                float(acc.get("amount", 0)),
+                float(acc.get("paid_amount", 0)),
+                acc.get("due_date"),
+                acc.get("status", "pending"),
+                acc.get("installment_number", 0),
+                acc.get("total_installments", 1),
+                acc.get("parent_id")
+            )
+            created.append(row_to_dict(row))
+        return created
     finally:
         await conn.close()
 
@@ -779,10 +996,12 @@ async def list_accounts_receivable(
 # === ENDPOINTS - ACCOUNTS PAYABLE ===
 
 @router.get("/accounts-payable")
+@router.get("/accounts-payable/")
 async def list_accounts_payable(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
+    search: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Lista contas a pagar do tenant"""
@@ -790,7 +1009,19 @@ async def list_accounts_payable(
     conn = await get_tenant_connection(tenant)
 
     try:
-        if status:
+        # Conta total para paginacao
+        total = await conn.fetchval("SELECT COUNT(*) FROM accounts_payable") or 0
+
+        if search:
+            rows = await conn.fetch("""
+                SELECT ap.*, s.name as supplier_name
+                FROM accounts_payable ap
+                LEFT JOIN suppliers s ON ap.supplier_id = s.id
+                WHERE s.name ILIKE $1 OR ap.description ILIKE $1
+                ORDER BY ap.due_date
+                LIMIT $2 OFFSET $3
+            """, f"%{search}%", limit, skip)
+        elif status:
             rows = await conn.fetch("""
                 SELECT ap.*, s.name as supplier_name
                 FROM accounts_payable ap
@@ -808,7 +1039,153 @@ async def list_accounts_payable(
                 LIMIT $1 OFFSET $2
             """, limit, skip)
 
-        return [row_to_dict(row) for row in rows]
+        items = [row_to_dict(row) for row in rows]
+        return {"items": items, "total": total}
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-payable/{account_id}")
+async def get_account_payable(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Busca conta a pagar por ID"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            SELECT ap.*, s.name as supplier_name
+            FROM accounts_payable ap
+            LEFT JOIN suppliers s ON ap.supplier_id = s.id
+            WHERE ap.id = $1
+        """, account_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.post("/accounts-payable")
+@router.post("/accounts-payable/")
+async def create_account_payable(
+    account: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria conta a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            INSERT INTO accounts_payable (
+                supplier_id, description, amount, paid_amount, due_date, status,
+                installment_number, total_installments, parent_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+        """,
+            account.get("supplier_id"),
+            account.get("description", ""),
+            float(account.get("amount", 0)),
+            float(account.get("paid_amount", 0)),
+            account.get("due_date"),
+            account.get("status", "pending"),
+            account.get("installment_number", 0),
+            account.get("total_installments", 1),
+            account.get("parent_id")
+        )
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.put("/accounts-payable/{account_id}")
+async def update_account_payable(
+    account_id: str,
+    account: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza conta a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            UPDATE accounts_payable SET
+                supplier_id = $2, description = $3, amount = $4, paid_amount = $5,
+                due_date = $6, status = $7, updated_at = $8
+            WHERE id = $1
+            RETURNING *
+        """,
+            account_id,
+            account.get("supplier_id"),
+            account.get("description", ""),
+            float(account.get("amount", 0)),
+            float(account.get("paid_amount", 0)),
+            account.get("due_date"),
+            account.get("status", "pending"),
+            datetime.utcnow()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.delete("/accounts-payable/{account_id}")
+async def delete_account_payable(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Remove conta a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        result = await conn.execute("DELETE FROM accounts_payable WHERE id = $1", account_id)
+        if result == "DELETE 0":
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+        return {"success": True, "message": "Conta removida"}
+    finally:
+        await conn.close()
+
+
+@router.post("/accounts-payable/{account_id}/pay")
+async def pay_account_payable(
+    account_id: str,
+    payment: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Registra pagamento de conta a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca conta atual
+        row = await conn.fetchrow("SELECT * FROM accounts_payable WHERE id = $1", account_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+
+        payment_amount = float(payment.get("payment_amount", 0))
+        current_paid = float(row["paid_amount"] or 0)
+        total_amount = float(row["amount"])
+        new_paid = current_paid + payment_amount
+
+        # Determina novo status
+        new_status = "paid" if new_paid >= total_amount else "partial"
+
+        # Atualiza conta
+        updated = await conn.fetchrow("""
+            UPDATE accounts_payable SET
+                paid_amount = $2, status = $3, payment_date = $4, updated_at = $5
+            WHERE id = $1
+            RETURNING *
+        """, account_id, new_paid, new_status, payment.get("payment_date"), datetime.utcnow())
+
+        return row_to_dict(updated)
     finally:
         await conn.close()
 
