@@ -23,6 +23,7 @@ class TenantStatus(str, Enum):
     TRIAL = "trial"               # Em período de teste
     TRIAL_EXPIRED = "trial_expired"  # Trial expirado
     CANCELLED = "cancelled"       # Cancelado
+    ERROR = "error"               # Erro no provisionamento
 
 
 class Tenant(Base):
