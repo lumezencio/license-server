@@ -32,8 +32,8 @@ TRIAL_LIMITS = {
 
 router = APIRouter(prefix="/register", tags=["Registration"])
 
-# Host do banco de dados dos tenants (nome do container Docker)
-TENANT_DATABASE_HOST = "enterprise-db"
+# Host do banco de dados dos tenants (usa configuracao ou nome do container Docker)
+TENANT_DATABASE_HOST = settings.POSTGRES_HOST or "db"
 
 
 async def provision_tenant_background(
