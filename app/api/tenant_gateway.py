@@ -1379,25 +1379,27 @@ async def get_accounts_receivable_summary(
     conn = await get_tenant_connection(tenant)
 
     try:
-        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable") or 0
-        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable") or 0
-        pending = await conn.fetchval("""
+        # Valor total pendente (a receber)
+        total_pending = await conn.fetchval("""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'partial')
         """) or 0
-        overdue = await conn.fetchval("""
+
+        # Valor total pago
+        total_paid = await conn.fetchval("""
+            SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
+        """) or 0
+
+        # Valor total vencido
+        total_overdue = await conn.fetchval("""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status = 'pending' AND due_date < CURRENT_DATE
+            WHERE status IN ('pending', 'partial') AND due_date < CURRENT_DATE
         """) or 0
 
         return {
-            "total": float(total),
-            "paid": float(paid),
-            "pending": float(pending),
-            "overdue": float(overdue),
-            "count_total": await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0,
-            "count_pending": await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status = 'pending'") or 0,
-            "count_paid": await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status = 'paid'") or 0
+            "total_pending": float(total_pending),
+            "total_paid": float(total_paid),
+            "total_overdue": float(total_overdue)
         }
     finally:
         await conn.close()
@@ -1412,20 +1414,69 @@ async def get_accounts_receivable_detailed(
     conn = await get_tenant_connection(tenant)
 
     try:
-        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable") or 0
-        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable") or 0
-        pending = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status = 'pending'
-        """) or 0
+        # Contagens
+        count_total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
+        count_pending = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status IN ('pending', 'partial')") or 0
+        count_paid = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status = 'paid'") or 0
+        count_overdue = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status IN ('pending', 'partial') AND due_date < CURRENT_DATE") or 0
+
+        # Valores
+        amount_total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable") or 0
+        amount_paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable") or 0
+        amount_balance = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status IN ('pending', 'partial')") or 0
+        amount_overdue = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status IN ('pending', 'partial') AND due_date < CURRENT_DATE") or 0
+
+        # Ticket medio
+        avg_ticket = float(amount_total) / float(count_total) if count_total > 0 else 0
+
+        # Vencimentos
+        due_today_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status IN ('pending', 'partial')") or 0
+        due_today_amount = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status IN ('pending', 'partial')") or 0
+
+        due_week_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status IN ('pending', 'partial')") or 0
+        due_week_amount = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status IN ('pending', 'partial')") or 0
+
+        due_month_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status IN ('pending', 'partial')") or 0
+        due_month_amount = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status IN ('pending', 'partial')") or 0
+
+        # Percentuais
+        pct_paid = (float(count_paid) / float(count_total) * 100) if count_total > 0 else 0
+        pct_pending = (float(count_pending) / float(count_total) * 100) if count_total > 0 else 0
+        pct_overdue = (float(count_overdue) / float(count_total) * 100) if count_total > 0 else 0
+        pct_received = (float(amount_paid) / float(amount_total) * 100) if amount_total > 0 else 0
 
         return {
-            "total_value": float(total),
-            "received_value": float(paid),
-            "pending_value": float(pending),
-            "overdue_value": 0.0,
-            "average_ticket": 0.0,
-            "receive_rate": (float(paid) / float(total) * 100) if total > 0 else 0
+            "counts": {
+                "total": count_total,
+                "pending": count_pending,
+                "paid": count_paid,
+                "overdue": count_overdue
+            },
+            "amounts": {
+                "total": float(amount_total),
+                "paid": float(amount_paid),
+                "balance": float(amount_balance),
+                "overdue": float(amount_overdue),
+                "avg_ticket": float(avg_ticket)
+            },
+            "due_today": {
+                "count": due_today_count,
+                "amount": float(due_today_amount)
+            },
+            "due_week": {
+                "count": due_week_count,
+                "amount": float(due_week_amount)
+            },
+            "due_month": {
+                "count": due_month_count,
+                "amount": float(due_month_amount)
+            },
+            "percentages": {
+                "paid": round(pct_paid, 1),
+                "pending": round(pct_pending, 1),
+                "overdue": round(pct_overdue, 1),
+                "received": round(pct_received, 1)
+            }
         }
     finally:
         await conn.close()
