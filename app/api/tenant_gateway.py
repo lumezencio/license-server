@@ -35,11 +35,26 @@ security = HTTPBearer()
 # === MODELOS ===
 
 class CustomerModel(BaseModel):
+    """Modelo de cliente - compatível com schema legado do enterprise_system"""
     id: Optional[str] = None
-    name: str
+    # Campo name opcional (schema novo) - se não vier, usa first_name + last_name
+    name: Optional[str] = None
+    # Campos do schema legado
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    company_name: Optional[str] = None
+    trade_name: Optional[str] = None
+    # Documentos
     document: Optional[str] = None
+    cpf_cnpj: Optional[str] = None
+    rg: Optional[str] = None
+    state_registration: Optional[str] = None
+    municipal_registration: Optional[str] = None
+    # Contato
     email: Optional[str] = None
     phone: Optional[str] = None
+    mobile: Optional[str] = None
+    # Endereço
     address: Optional[str] = None
     address_number: Optional[str] = None
     address_complement: Optional[str] = None
@@ -47,7 +62,14 @@ class CustomerModel(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     zip_code: Optional[str] = None
+    country: Optional[str] = "BR"
+    # Dados adicionais
+    birth_date: Optional[str] = None
+    customer_type: Optional[str] = "individual"
+    customer_status: Optional[str] = "active"
     notes: Optional[str] = None
+    credit_limit: Optional[float] = 0
+    payment_term_days: Optional[int] = 30
     is_active: bool = True
 
 
@@ -277,23 +299,87 @@ async def create_customer(
     customer: CustomerModel,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Cria novo cliente"""
+    """Cria novo cliente - compatível com schema legado do enterprise_system"""
+    import uuid
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
-        row = await conn.fetchrow("""
-            INSERT INTO customers (name, document, email, phone, address, address_number,
-                                   address_complement, neighborhood, city, state, zip_code,
-                                   notes, is_active)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING *
-        """, customer.name, customer.document, customer.email, customer.phone,
-           customer.address, customer.address_number, customer.address_complement,
-           customer.neighborhood, customer.city, customer.state, customer.zip_code,
-           customer.notes, customer.is_active)
+        # Gera UUID para o cliente
+        customer_id = str(uuid.uuid4())
 
-        return row_to_dict(row)
+        # Documento: usa cpf_cnpj se disponível, senão document
+        doc = customer.cpf_cnpj or customer.document or ""
+
+        # Parse birth_date se vier como string
+        birth_date = None
+        if customer.birth_date:
+            try:
+                from datetime import datetime as dt
+                birth_date = dt.strptime(customer.birth_date, "%Y-%m-%d").date()
+            except:
+                pass
+
+        # INSERT compatível com schema legado (enterprise_system)
+        row = await conn.fetchrow("""
+            INSERT INTO customers (
+                id, first_name, last_name, company_name, trade_name,
+                cpf_cnpj, rg, state_registration, municipal_registration,
+                email, phone, mobile,
+                address, address_number, address_complement,
+                neighborhood, city, state, zip_code, country,
+                birth_date, customer_type, customer_status,
+                notes, credit_limit, payment_term_days, is_active,
+                created_at, updated_at
+            )
+            VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7, $8, $9,
+                $10, $11, $12,
+                $13, $14, $15,
+                $16, $17, $18, $19, $20,
+                $21, $22, $23,
+                $24, $25, $26, $27,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            RETURNING *
+        """,
+            customer_id,
+            customer.first_name or "",
+            customer.last_name or "",
+            customer.company_name,
+            customer.trade_name,
+            doc,
+            customer.rg,
+            customer.state_registration,
+            customer.municipal_registration,
+            customer.email,
+            customer.phone,
+            customer.mobile,
+            customer.address,
+            customer.address_number,
+            customer.address_complement,
+            customer.neighborhood,
+            customer.city,
+            customer.state,
+            customer.zip_code,
+            customer.country or "BR",
+            birth_date,
+            customer.customer_type or "individual",
+            customer.customer_status or "active",
+            customer.notes,
+            customer.credit_limit or 0,
+            customer.payment_term_days or 30,
+            customer.is_active
+        )
+
+        result = row_to_dict(row)
+        # Adiciona campo name para compatibilidade
+        result["name"] = f"{result.get('first_name', '')} {result.get('last_name', '')}".strip()
+        return result
+    except Exception as e:
+        logger.error(f"Erro ao criar cliente: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await conn.close()
 
@@ -304,28 +390,76 @@ async def update_customer(
     customer: CustomerModel,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Atualiza cliente"""
+    """Atualiza cliente - compatível com schema legado do enterprise_system"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Documento: usa cpf_cnpj se disponível, senão document
+        doc = customer.cpf_cnpj or customer.document or ""
+
+        # Parse birth_date se vier como string
+        birth_date = None
+        if customer.birth_date:
+            try:
+                from datetime import datetime as dt
+                birth_date = dt.strptime(customer.birth_date, "%Y-%m-%d").date()
+            except:
+                pass
+
+        # UPDATE compatível com schema legado
         row = await conn.fetchrow("""
             UPDATE customers SET
-                name = $2, document = $3, email = $4, phone = $5, address = $6,
-                address_number = $7, address_complement = $8, neighborhood = $9,
-                city = $10, state = $11, zip_code = $12, notes = $13, is_active = $14,
-                updated_at = $15
-            WHERE id = $1
+                first_name = $2, last_name = $3, company_name = $4, trade_name = $5,
+                cpf_cnpj = $6, rg = $7, state_registration = $8, municipal_registration = $9,
+                email = $10, phone = $11, mobile = $12,
+                address = $13, address_number = $14, address_complement = $15,
+                neighborhood = $16, city = $17, state = $18, zip_code = $19, country = $20,
+                birth_date = $21, customer_type = $22, customer_status = $23,
+                notes = $24, credit_limit = $25, payment_term_days = $26, is_active = $27,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id::text = $1
             RETURNING *
-        """, customer_id, customer.name, customer.document, customer.email,
-           customer.phone, customer.address, customer.address_number,
-           customer.address_complement, customer.neighborhood, customer.city,
-           customer.state, customer.zip_code, customer.notes, customer.is_active,
-           datetime.utcnow())
+        """,
+            customer_id,
+            customer.first_name or "",
+            customer.last_name or "",
+            customer.company_name,
+            customer.trade_name,
+            doc,
+            customer.rg,
+            customer.state_registration,
+            customer.municipal_registration,
+            customer.email,
+            customer.phone,
+            customer.mobile,
+            customer.address,
+            customer.address_number,
+            customer.address_complement,
+            customer.neighborhood,
+            customer.city,
+            customer.state,
+            customer.zip_code,
+            customer.country or "BR",
+            birth_date,
+            customer.customer_type or "individual",
+            customer.customer_status or "active",
+            customer.notes,
+            customer.credit_limit or 0,
+            customer.payment_term_days or 30,
+            customer.is_active
+        )
 
         if not row:
             raise HTTPException(status_code=404, detail="Cliente nao encontrado")
-        return row_to_dict(row)
+        result = row_to_dict(row)
+        result["name"] = f"{result.get('first_name', '')} {result.get('last_name', '')}".strip()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar cliente: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await conn.close()
 
@@ -335,16 +469,17 @@ async def delete_customer(
     customer_id: str,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Remove cliente"""
+    """Remove cliente (soft delete)"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Soft delete - atualiza deleted_at em vez de remover
         result = await conn.execute(
-            "DELETE FROM customers WHERE id = $1",
+            "UPDATE customers SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id::text = $1 AND deleted_at IS NULL",
             customer_id
         )
-        if result == "DELETE 0":
+        if result == "UPDATE 0":
             raise HTTPException(status_code=404, detail="Cliente nao encontrado")
         return {"success": True, "message": "Cliente removido"}
     finally:
