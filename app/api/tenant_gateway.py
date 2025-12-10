@@ -2011,7 +2011,7 @@ async def get_company(
     conn = await get_tenant_connection(tenant)
 
     try:
-        row = await conn.fetchrow("SELECT * FROM company LIMIT 1")
+        row = await conn.fetchrow("SELECT * FROM companies LIMIT 1")
         if not row:
             # Retorna dados do tenant como fallback
             return {
@@ -2670,7 +2670,7 @@ async def get_reports_company_info(
     conn = await get_tenant_connection(tenant)
 
     try:
-        row = await conn.fetchrow("SELECT * FROM company LIMIT 1")
+        row = await conn.fetchrow("SELECT * FROM companies LIMIT 1")
         if row:
             return row_to_dict(row)
         # Fallback com dados do tenant
