@@ -1065,22 +1065,44 @@ async def create_account_receivable(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Gera UUID para o ID
+        import uuid
+        account_id = str(uuid.uuid4())
+
+        # Converte due_date para date se for string
+        due_date = account.get("due_date")
+        if isinstance(due_date, str):
+            from datetime import datetime as dt
+            due_date = dt.fromisoformat(due_date.replace('Z', '+00:00')).date() if 'T' in due_date else dt.strptime(due_date, '%Y-%m-%d').date()
+
+        # issue_date default para hoje se nao informado
+        issue_date = account.get("issue_date")
+        if issue_date is None:
+            issue_date = datetime.utcnow().date()
+        elif isinstance(issue_date, str):
+            from datetime import datetime as dt
+            issue_date = dt.fromisoformat(issue_date.replace('Z', '+00:00')).date() if 'T' in issue_date else dt.strptime(issue_date, '%Y-%m-%d').date()
+
         row = await conn.fetchrow("""
             INSERT INTO accounts_receivable (
-                customer_id, description, amount, paid_amount, due_date, status,
-                installment_number, total_installments, parent_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                id, customer_id, description, amount, paid_amount, due_date, issue_date,
+                status, payment_method, installment_number, total_installments, parent_id, is_active
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
         """,
+            account_id,
             account.get("customer_id"),
             account.get("description", ""),
             float(account.get("amount", 0)),
             float(account.get("paid_amount", 0)),
-            account.get("due_date"),
-            account.get("status", "pending"),
-            account.get("installment_number", 0),
-            account.get("total_installments", 1),
-            account.get("parent_id")
+            due_date,
+            issue_date,
+            account.get("status", "PENDING").upper(),
+            account.get("payment_method", "PIX").upper() if account.get("payment_method") else "PIX",
+            account.get("installment_number"),
+            account.get("total_installments"),
+            account.get("parent_id"),
+            True  # is_active sempre True ao criar
         )
         return row_to_dict(row)
     finally:
@@ -1203,34 +1225,134 @@ async def get_customer_for_receivable(
 @router.post("/accounts-receivable/bulk")
 async def create_bulk_accounts_receivable(
     data: dict,
+    num_installments: int = 1,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Cria multiplas contas a receber (parcelamento)"""
+    """
+    Cria contas a receber com parcelamento.
+
+    Recebe dados base (customer_id, description, amount, due_date, etc.) e
+    o número de parcelas (num_installments). Cria automaticamente:
+    - Uma conta PAI (installment_number=0) com o valor total
+    - N parcelas filhas com valores divididos
+    """
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
+    import uuid
+    from dateutil.relativedelta import relativedelta
 
     try:
-        accounts = data.get("accounts", [])
         created = []
-        for acc in accounts:
-            row = await conn.fetchrow("""
+
+        # Dados base da conta
+        customer_id = data.get("customer_id")
+        description = data.get("description", "")
+        total_amount = float(data.get("amount", 0))
+        # payment_method deve ser MAIÚSCULO para o ENUM
+        payment_method = data.get("payment_method", "PIX").upper() if data.get("payment_method") else "PIX"
+
+        # Converte due_date para date
+        due_date = data.get("due_date")
+        if isinstance(due_date, str):
+            from datetime import datetime as dt
+            due_date = dt.fromisoformat(due_date.replace('Z', '+00:00')).date() if 'T' in due_date else dt.strptime(due_date, '%Y-%m-%d').date()
+
+        # issue_date default para hoje
+        issue_date = data.get("issue_date")
+        if issue_date is None:
+            issue_date = datetime.utcnow().date()
+        elif isinstance(issue_date, str):
+            from datetime import datetime as dt
+            issue_date = dt.fromisoformat(issue_date.replace('Z', '+00:00')).date() if 'T' in issue_date else dt.strptime(issue_date, '%Y-%m-%d').date()
+
+        # Se num_installments > 1, cria conta PAI + parcelas
+        if num_installments > 1:
+            # 1. Cria conta PAI (installment_number = 0)
+            parent_id = str(uuid.uuid4())
+            parent_row = await conn.fetchrow("""
                 INSERT INTO accounts_receivable (
-                    customer_id, description, amount, paid_amount, due_date, status,
-                    installment_number, total_installments, parent_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    id, customer_id, description, amount, paid_amount, due_date, issue_date,
+                    status, payment_method, installment_number, total_installments, parent_id, is_active
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 RETURNING *
             """,
-                acc.get("customer_id"),
-                acc.get("description", ""),
-                float(acc.get("amount", 0)),
-                float(acc.get("paid_amount", 0)),
-                acc.get("due_date"),
-                acc.get("status", "pending"),
-                acc.get("installment_number", 0),
-                acc.get("total_installments", 1),
-                acc.get("parent_id")
+                parent_id,
+                customer_id,
+                description,
+                total_amount,
+                0.0,  # paid_amount
+                due_date,
+                issue_date,
+                "PENDING",
+                payment_method,
+                0,  # installment_number = 0 para PAI
+                num_installments,
+                None,  # parent_id = None (é a conta pai)
+                True
+            )
+            created.append(row_to_dict(parent_row))
+
+            # 2. Cria as parcelas filhas
+            installment_amount = round(total_amount / num_installments, 2)
+            # Ajusta última parcela para compensar arredondamento
+            last_installment_amount = total_amount - (installment_amount * (num_installments - 1))
+
+            for i in range(1, num_installments + 1):
+                installment_id = str(uuid.uuid4())
+                # Calcula data de vencimento (incrementa mês a cada parcela)
+                installment_due_date = due_date + relativedelta(months=i-1)
+
+                # Valor da parcela (última pode ser diferente por arredondamento)
+                amount = last_installment_amount if i == num_installments else installment_amount
+
+                installment_row = await conn.fetchrow("""
+                    INSERT INTO accounts_receivable (
+                        id, customer_id, description, amount, paid_amount, due_date, issue_date,
+                        status, payment_method, installment_number, total_installments, parent_id, is_active
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    RETURNING *
+                """,
+                    installment_id,
+                    customer_id,
+                    f"{description} - PARCELA {i}/{num_installments}",
+                    amount,
+                    0.0,  # paid_amount
+                    installment_due_date,
+                    issue_date,
+                    "PENDING",
+                    payment_method,
+                    i,  # installment_number
+                    num_installments,
+                    parent_id,  # referência à conta pai
+                    True
+                )
+                created.append(row_to_dict(installment_row))
+        else:
+            # Conta simples (sem parcelamento)
+            account_id = str(uuid.uuid4())
+            row = await conn.fetchrow("""
+                INSERT INTO accounts_receivable (
+                    id, customer_id, description, amount, paid_amount, due_date, issue_date,
+                    status, payment_method, installment_number, total_installments, parent_id, is_active
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                RETURNING *
+            """,
+                account_id,
+                customer_id,
+                description,
+                total_amount,
+                0.0,
+                due_date,
+                issue_date,
+                data.get("status", "PENDING").upper(),
+                payment_method,
+                None,  # installment_number
+                None,  # total_installments
+                None,  # parent_id
+                True
             )
             created.append(row_to_dict(row))
+
         return created
     finally:
         await conn.close()
@@ -1326,24 +1448,41 @@ async def create_account_payable(
     """Cria conta a pagar"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
+    import uuid
 
     try:
+        # Gera UUID para o ID
+        account_id = str(uuid.uuid4())
+
+        # Converte due_date para date se for string
+        due_date = account.get("due_date")
+        if isinstance(due_date, str):
+            from datetime import datetime as dt
+            due_date = dt.fromisoformat(due_date.replace('Z', '+00:00')).date() if 'T' in due_date else dt.strptime(due_date, '%Y-%m-%d').date()
+
+        amount = float(account.get("amount", 0))
+        amount_paid = float(account.get("amount_paid", account.get("paid_amount", 0)))
+
+        # Schema legado: accounts_payable usa campos diferentes
+        # id, supplier, description, amount, amount_paid, balance, due_date, category, payment_method, status
         row = await conn.fetchrow("""
             INSERT INTO accounts_payable (
-                supplier_id, description, amount, paid_amount, due_date, status,
-                installment_number, total_installments, parent_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                id, supplier_id, supplier, description, amount, amount_paid, balance,
+                due_date, category, payment_method, status
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
         """,
+            account_id,
             account.get("supplier_id"),
+            account.get("supplier", account.get("supplier_name", "")),
             account.get("description", ""),
-            float(account.get("amount", 0)),
-            float(account.get("paid_amount", 0)),
-            account.get("due_date"),
-            account.get("status", "pending"),
-            account.get("installment_number", 0),
-            account.get("total_installments", 1),
-            account.get("parent_id")
+            amount,
+            amount_paid,
+            amount - amount_paid,  # balance
+            due_date,
+            account.get("category", "suppliers"),
+            account.get("payment_method", "bank_transfer"),
+            account.get("status", "pending")
         )
         return row_to_dict(row)
     finally:
@@ -1361,19 +1500,34 @@ async def update_account_payable(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Converte due_date para date se for string
+        due_date = account.get("due_date")
+        if isinstance(due_date, str):
+            from datetime import datetime as dt
+            due_date = dt.fromisoformat(due_date.replace('Z', '+00:00')).date() if 'T' in due_date else dt.strptime(due_date, '%Y-%m-%d').date()
+
+        amount = float(account.get("amount", 0))
+        amount_paid = float(account.get("amount_paid", account.get("paid_amount", 0)))
+
+        # Schema legado: accounts_payable usa campos diferentes
         row = await conn.fetchrow("""
             UPDATE accounts_payable SET
-                supplier_id = $2, description = $3, amount = $4, paid_amount = $5,
-                due_date = $6, status = $7, updated_at = $8
+                supplier_id = $2, supplier = $3, description = $4, amount = $5,
+                amount_paid = $6, balance = $7, due_date = $8, category = $9,
+                payment_method = $10, status = $11, updated_at = $12
             WHERE id = $1
             RETURNING *
         """,
             account_id,
             account.get("supplier_id"),
+            account.get("supplier", account.get("supplier_name", "")),
             account.get("description", ""),
-            float(account.get("amount", 0)),
-            float(account.get("paid_amount", 0)),
-            account.get("due_date"),
+            amount,
+            amount_paid,
+            amount - amount_paid,  # balance
+            due_date,
+            account.get("category", "suppliers"),
+            account.get("payment_method", "bank_transfer"),
             account.get("status", "pending"),
             datetime.utcnow()
         )
@@ -1419,20 +1573,28 @@ async def pay_account_payable(
             raise HTTPException(status_code=404, detail="Conta nao encontrada")
 
         payment_amount = float(payment.get("payment_amount", 0))
-        current_paid = float(row["paid_amount"] or 0)
+        # Schema legado usa amount_paid, nao paid_amount
+        current_paid = float(row["amount_paid"] or 0)
         total_amount = float(row["amount"])
         new_paid = current_paid + payment_amount
+        new_balance = total_amount - new_paid
 
         # Determina novo status
         new_status = "paid" if new_paid >= total_amount else "partial"
 
-        # Atualiza conta
+        # Converte payment_date para date se for string
+        payment_date = payment.get("payment_date")
+        if isinstance(payment_date, str):
+            from datetime import datetime as dt
+            payment_date = dt.fromisoformat(payment_date.replace('Z', '+00:00')).date() if 'T' in payment_date else dt.strptime(payment_date, '%Y-%m-%d').date()
+
+        # Atualiza conta - schema legado usa amount_paid e balance
         updated = await conn.fetchrow("""
             UPDATE accounts_payable SET
-                paid_amount = $2, status = $3, payment_date = $4, updated_at = $5
+                amount_paid = $2, balance = $3, status = $4, payment_date = $5, updated_at = $6
             WHERE id = $1
             RETURNING *
-        """, account_id, new_paid, new_status, payment.get("payment_date"), datetime.utcnow())
+        """, account_id, new_paid, new_balance, new_status, payment_date, datetime.utcnow())
 
         return row_to_dict(updated)
     finally:
