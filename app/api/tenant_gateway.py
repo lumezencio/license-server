@@ -10,7 +10,10 @@ Este modulo serve como um "proxy" que:
 """
 from datetime import datetime
 from typing import Optional, List, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, UploadFile, File
+from fastapi.responses import FileResponse
+import os
+import uuid as uuid_lib
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -2071,6 +2074,66 @@ async def update_company(
     finally:
         await conn.close()
 
+
+
+
+@router.get("/logo/current")
+async def get_current_logo(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna logo atual da empresa"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("SELECT logo_path FROM companies LIMIT 1")
+        if not row or not row['logo_path']:
+            raise HTTPException(status_code=404, detail="Logo não encontrado")
+        
+        return {"logo_url": f"/uploads/{row['logo_path']}" if row['logo_path'] else None}
+    finally:
+        await conn.close()
+
+
+@router.post("/logo/upload")
+async def upload_logo(
+    file: UploadFile = File(...),
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Faz upload do logo da empresa"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Valida tipo de arquivo
+        if not file.content_type or not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="Arquivo deve ser uma imagem")
+
+        # Gera nome único para o arquivo
+        ext = file.filename.split('.')[-1] if '.' in file.filename else 'png'
+        filename = f"logo_{tenant.tenant_code}_{uuid_lib.uuid4().hex[:8]}.{ext}"
+        
+        # Lê conteúdo do arquivo
+        contents = await file.read()
+        
+        # Salva no container (diretório /app/uploads/logos)
+        upload_dir = "/app/uploads/logos"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        filepath = os.path.join(upload_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(contents)
+
+        # Atualiza path no banco
+        logo_path = f"logos/{filename}"
+        await conn.execute(
+            "UPDATE companies SET logo_path = $1, updated_at = NOW()",
+            logo_path
+        )
+
+        return {"success": True, "logo_url": f"/uploads/{logo_path}"}
+    finally:
+        await conn.close()
 
 # === ENDPOINTS - LEGAL CALCULATIONS ===
 
