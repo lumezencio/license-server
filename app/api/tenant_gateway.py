@@ -1002,23 +1002,24 @@ async def list_accounts_receivable(
                     LIMIT $1 OFFSET $2
                 """, limit, skip)
 
-            # PAID: Contas PAI onde TODAS as parcelas estão pagas
+            # PAID: Contas PAI que têm PELO MENOS UMA parcela paga
+            # (mostra contas que receberam pagamentos)
             elif status_upper == 'PAID':
                 rows = await conn.fetch("""
                     SELECT ar.*,
                         COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                        NULL::date as next_due_date
+                        (SELECT MIN(child.due_date) FROM accounts_receivable child
+                         WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
                     WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
                       AND (
-                          -- Conta PAI com parcelas: TODAS as parcelas estão pagas
-                          (EXISTS (SELECT 1 FROM accounts_receivable child WHERE child.parent_id = ar.id)
-                           AND NOT EXISTS (
-                               SELECT 1 FROM accounts_receivable child
-                               WHERE child.parent_id = ar.id
-                               AND UPPER(child.status::text) != 'PAID'
-                           ))
+                          -- Conta PAI com parcelas: tem pelo menos uma parcela paga
+                          EXISTS (
+                              SELECT 1 FROM accounts_receivable child
+                              WHERE child.parent_id = ar.id
+                              AND UPPER(child.status::text) = 'PAID'
+                          )
                           OR
                           -- Conta simples sem parcelas: a própria conta está paga
                           (NOT EXISTS (SELECT 1 FROM accounts_receivable child WHERE child.parent_id = ar.id)
