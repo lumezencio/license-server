@@ -1043,6 +1043,16 @@ async def get_account_installments(
         for row in rows:
             row_dict = row_to_dict(row)
             installment_num = row_dict.get("installment_number", 0)
+
+            # Adiciona account_id para compatibilidade com frontend
+            # account_id é o parent_id (conta pai) ou o próprio id se for conta simples
+            row_dict["account_id"] = row_dict.get("parent_id") or row_dict.get("id")
+
+            # Calcula balance (saldo devedor)
+            amount = float(row_dict.get("amount") or 0)
+            paid_amount = float(row_dict.get("paid_amount") or 0)
+            row_dict["balance"] = amount - paid_amount
+
             if installment_num > 0:
                 items.append(row_dict)
             elif len(rows) == 1:
@@ -1224,16 +1234,19 @@ async def generate_installment_receipt(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Busca a parcela específica
+        # Busca a parcela específica - usando colunas explícitas para evitar erro de paid_amount
         installment = await conn.fetchrow("""
-            SELECT ar.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                c.cpf_cnpj as customer_document,
-                c.email as customer_email,
-                c.phone as customer_phone,
-                c.address as customer_address,
-                c.city as customer_city,
-                c.state as customer_state
+            SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                   ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                   ar.due_date, ar.payment_date, ar.status::text as status,
+                   ar.installment_number, ar.total_installments,
+                   COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                   c.cpf_cnpj as customer_document,
+                   c.email as customer_email,
+                   c.phone as customer_phone,
+                   c.address as customer_address,
+                   c.city as customer_city,
+                   c.state as customer_state
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE ar.parent_id = $1 AND ar.installment_number = $2
@@ -1242,14 +1255,17 @@ async def generate_installment_receipt(
         if not installment:
             # Tenta buscar a conta diretamente (conta simples sem parcelas)
             installment = await conn.fetchrow("""
-                SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                    c.cpf_cnpj as customer_document,
-                    c.email as customer_email,
-                    c.phone as customer_phone,
-                    c.address as customer_address,
-                    c.city as customer_city,
-                    c.state as customer_state
+                SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                       ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                       ar.due_date, ar.payment_date, ar.status::text as status,
+                       ar.installment_number, ar.total_installments,
+                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       c.cpf_cnpj as customer_document,
+                       c.email as customer_email,
+                       c.phone as customer_phone,
+                       c.address as customer_address,
+                       c.city as customer_city,
+                       c.state as customer_state
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE ar.id = $1
@@ -1381,17 +1397,20 @@ async def generate_promissory_note(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Busca a parcela específica
+        # Busca a parcela específica - usando colunas explícitas para evitar erro de paid_amount
         installment = await conn.fetchrow("""
-            SELECT ar.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                c.cpf_cnpj as customer_document,
-                c.email as customer_email,
-                c.phone as customer_phone,
-                c.address as customer_address,
-                c.city as customer_city,
-                c.state as customer_state,
-                c.zip_code as customer_zip
+            SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                   ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                   ar.due_date, ar.payment_date, ar.status::text as status,
+                   ar.installment_number, ar.total_installments,
+                   COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                   c.cpf_cnpj as customer_document,
+                   c.email as customer_email,
+                   c.phone as customer_phone,
+                   c.address as customer_address,
+                   c.city as customer_city,
+                   c.state as customer_state,
+                   c.zip_code as customer_zip
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE ar.parent_id = $1 AND ar.installment_number = $2
@@ -1400,15 +1419,18 @@ async def generate_promissory_note(
         if not installment:
             # Tenta buscar a conta diretamente (conta simples sem parcelas)
             installment = await conn.fetchrow("""
-                SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                    c.cpf_cnpj as customer_document,
-                    c.email as customer_email,
-                    c.phone as customer_phone,
-                    c.address as customer_address,
-                    c.city as customer_city,
-                    c.state as customer_state,
-                    c.zip_code as customer_zip
+                SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                       ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                       ar.due_date, ar.payment_date, ar.status::text as status,
+                       ar.installment_number, ar.total_installments,
+                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       c.cpf_cnpj as customer_document,
+                       c.email as customer_email,
+                       c.phone as customer_phone,
+                       c.address as customer_address,
+                       c.city as customer_city,
+                       c.state as customer_state,
+                       c.zip_code as customer_zip
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE ar.id = $1
@@ -3479,28 +3501,35 @@ async def get_installments_for_promissory(
 
     try:
         # Busca parcelas filhas pendentes (installment_number > 0, status != PAID)
+        # Usa CAST para comparar status como texto, evitando problemas com ENUM
         rows = await conn.fetch("""
-            SELECT ar.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                c.cpf_cnpj as customer_document
+            SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                   ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                   ar.due_date, ar.payment_date, ar.status::text as status,
+                   ar.installment_number, ar.total_installments, ar.parent_id,
+                   COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                   c.cpf_cnpj as customer_document
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE ar.parent_id = $1
               AND ar.installment_number > 0
-              AND ar.status NOT IN ('PAID', 'paid')
+              AND UPPER(ar.status::text) != 'PAID'
             ORDER BY ar.installment_number
         """, account_id)
 
         if not rows:
             # Tenta buscar a própria conta se não tiver parcelas (conta simples)
             rows = await conn.fetch("""
-                SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                    c.cpf_cnpj as customer_document
+                SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                       ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                       ar.due_date, ar.payment_date, ar.status::text as status,
+                       ar.installment_number, ar.total_installments, ar.parent_id,
+                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       c.cpf_cnpj as customer_document
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE ar.id = $1
-                  AND ar.status NOT IN ('PAID', 'paid')
+                  AND UPPER(ar.status::text) != 'PAID'
             """, account_id)
 
         items = []
@@ -3596,15 +3625,18 @@ async def generate_promissory_pdf(
 
         # Gera uma nota promissória para cada parcela selecionada
         for idx, installment_id in enumerate(selected_ids):
-            # Busca dados da parcela
+            # Busca dados da parcela - usando colunas explícitas para evitar erro de paid_amount
             installment = await conn.fetchrow("""
-                SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
-                    c.cpf_cnpj as customer_document,
-                    c.address as customer_address,
-                    c.city as customer_city,
-                    c.state as customer_state,
-                    c.zip_code as customer_zip
+                SELECT ar.id, ar.customer_id, ar.description, ar.document_number,
+                       ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
+                       ar.due_date, ar.payment_date, ar.status::text as status,
+                       ar.installment_number, ar.total_installments,
+                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       c.cpf_cnpj as customer_document,
+                       c.address as customer_address,
+                       c.city as customer_city,
+                       c.state as customer_state,
+                       c.zip_code as customer_zip
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE ar.id = $1
