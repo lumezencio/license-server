@@ -2209,11 +2209,12 @@ async def get_reports_accounts_receivable_summary(
 
     try:
         # Filtro para excluir contas PAI de parcelamentos
+        # IMPORTANTE: usar ar.is_active para evitar ambiguidade com customers.is_active
         filter_clause = """
-            AND is_active = true
+            AND ar.is_active = true
             AND (
-                parent_id IS NOT NULL
-                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+                ar.parent_id IS NOT NULL
+                OR (ar.parent_id IS NULL AND (ar.total_installments IS NULL OR ar.total_installments <= 1))
             )
         """
 
@@ -2222,22 +2223,22 @@ async def get_reports_accounts_receivable_summary(
         param_idx = 1
 
         if start_date:
-            where_parts.append(f"due_date >= ${param_idx}")
+            where_parts.append(f"ar.due_date >= ${param_idx}")
             params.append(start_date)
             param_idx += 1
 
         if end_date:
-            where_parts.append(f"due_date <= ${param_idx}")
+            where_parts.append(f"ar.due_date <= ${param_idx}")
             params.append(end_date)
             param_idx += 1
 
         if customer_id:
-            where_parts.append(f"customer_id::text = ${param_idx}")
+            where_parts.append(f"ar.customer_id::text = ${param_idx}")
             params.append(customer_id)
             param_idx += 1
 
         if status:
-            where_parts.append(f"status::text = ${param_idx}")
+            where_parts.append(f"ar.status::text = ${param_idx}")
             params.append(status)
             param_idx += 1
 
@@ -2245,7 +2246,10 @@ async def get_reports_accounts_receivable_summary(
 
         # Lista de contas
         rows = await conn.fetch(f"""
-            SELECT ar.*,
+            SELECT ar.id, ar.customer_id, ar.description, ar.document_number, ar.amount,
+                ar.paid_amount, ar.due_date, ar.payment_date, ar.status, ar.payment_method,
+                ar.installment_number, ar.total_installments, ar.parent_id, ar.notes,
+                ar.is_active, ar.created_at, ar.updated_at,
                 COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
@@ -2305,27 +2309,28 @@ async def get_reports_accounts_payable_summary(
     conn = await get_tenant_connection(tenant)
 
     try:
-        where_parts = ["1=1", "is_active = true"]
+        # IMPORTANTE: usar ap.is_active para evitar ambiguidade com suppliers.is_active
+        where_parts = ["1=1", "ap.is_active = true"]
         params = []
         param_idx = 1
 
         if start_date:
-            where_parts.append(f"due_date >= ${param_idx}")
+            where_parts.append(f"ap.due_date >= ${param_idx}")
             params.append(start_date)
             param_idx += 1
 
         if end_date:
-            where_parts.append(f"due_date <= ${param_idx}")
+            where_parts.append(f"ap.due_date <= ${param_idx}")
             params.append(end_date)
             param_idx += 1
 
         if supplier_id:
-            where_parts.append(f"supplier_id::text = ${param_idx}")
+            where_parts.append(f"ap.supplier_id::text = ${param_idx}")
             params.append(supplier_id)
             param_idx += 1
 
         if status:
-            where_parts.append(f"status::text = ${param_idx}")
+            where_parts.append(f"ap.status::text = ${param_idx}")
             params.append(status)
             param_idx += 1
 
@@ -2333,7 +2338,10 @@ async def get_reports_accounts_payable_summary(
 
         # Lista de contas - schema legado usa amount_paid em vez de paid_amount
         rows = await conn.fetch(f"""
-            SELECT ap.*,
+            SELECT ap.id, ap.supplier_id, ap.description, ap.document_number, ap.amount,
+                COALESCE(ap.amount_paid, ap.paid_amount, 0) as paid_amount,
+                ap.due_date, ap.payment_date, ap.status, ap.payment_method,
+                ap.notes, ap.is_active, ap.created_at, ap.updated_at,
                 COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
             FROM accounts_payable ap
             LEFT JOIN suppliers s ON ap.supplier_id = s.id
@@ -2652,19 +2660,21 @@ async def get_reports_default_analysis(
     conn = await get_tenant_connection(tenant)
 
     try:
-        where_parts = ["status::text IN ('pending', 'PENDING')", "due_date < CURRENT_DATE", "is_active = true"]
+        # IMPORTANTE: usar ar. prefix para evitar ambiguidade
+        where_parts = ["ar.status::text IN ('pending', 'PENDING')", "ar.due_date < CURRENT_DATE", "ar.is_active = true"]
         params = []
         param_idx = 1
 
         if customer_id:
-            where_parts.append(f"customer_id::text = ${param_idx}")
+            where_parts.append(f"ar.customer_id::text = ${param_idx}")
             params.append(customer_id)
             param_idx += 1
 
         where_clause = " AND ".join(where_parts)
 
         rows = await conn.fetch(f"""
-            SELECT ar.*,
+            SELECT ar.id, ar.customer_id, ar.description, ar.document_number, ar.amount,
+                ar.paid_amount, ar.due_date, ar.payment_date, ar.status,
                 COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
                 CURRENT_DATE - ar.due_date as days_overdue
             FROM accounts_receivable ar
