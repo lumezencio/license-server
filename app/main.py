@@ -72,8 +72,8 @@ app.include_router(tenant_gateway_router, prefix="/api")
 
 # Static files para uploads
 uploads_dir = "/app/uploads"
-if os.path.exists(uploads_dir):
-    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
 @app.get("/")
