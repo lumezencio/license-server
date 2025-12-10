@@ -954,10 +954,13 @@ async def list_accounts_receivable(
 
         # Schema legado: customers usa first_name/last_name em vez de name
         # IMPORTANTE: Retorna apenas contas PAI (installment_number = 0)
+        # Inclui next_due_date = próxima parcela a vencer (não paga)
         if search:
             rows = await conn.fetch("""
                 SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    (SELECT MIN(child.due_date) FROM accounts_receivable child
+                     WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
@@ -971,44 +974,67 @@ async def list_accounts_receivable(
             status_upper = status.upper()
             print(f"[AR] Filtrando por status: {status_upper}", flush=True)
 
-            # Tratamento especial para OVERDUE (vencido) - é calculado dinamicamente
+            # OVERDUE: Contas PAI que têm PARCELAS FILHAS vencidas e não pagas
             if status_upper == 'OVERDUE':
                 rows = await conn.fetch("""
                     SELECT ar.*,
-                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                        (SELECT MIN(child.due_date) FROM accounts_receivable child
+                         WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
                     WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
-                      AND ar.due_date < CURRENT_DATE
                       AND UPPER(ar.status::text) IN ('PENDING', 'PARTIAL')
+                      AND (
+                          -- Conta PAI com parcelas: tem parcela vencida não paga
+                          EXISTS (
+                              SELECT 1 FROM accounts_receivable child
+                              WHERE child.parent_id = ar.id
+                              AND child.due_date < CURRENT_DATE
+                              AND UPPER(child.status::text) != 'PAID'
+                          )
+                          OR
+                          -- Conta simples sem parcelas: a própria conta está vencida
+                          (NOT EXISTS (SELECT 1 FROM accounts_receivable child WHERE child.parent_id = ar.id)
+                           AND ar.due_date < CURRENT_DATE)
+                      )
                     ORDER BY ar.due_date
                     LIMIT $1 OFFSET $2
                 """, limit, skip)
+
+            # PAID: Contas PAI onde TODAS as parcelas estão pagas
             elif status_upper == 'PAID':
-                # Para PAID, buscar contas PAI que estão totalmente pagas
-                # Uma conta PAI está PAID quando todas suas parcelas estão pagas
                 rows = await conn.fetch("""
                     SELECT ar.*,
-                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                        NULL::date as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
                     WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
-                      AND NOT EXISTS (
-                          SELECT 1 FROM accounts_receivable child
-                          WHERE child.parent_id = ar.id
-                          AND UPPER(child.status::text) != 'PAID'
+                      AND (
+                          -- Conta PAI com parcelas: TODAS as parcelas estão pagas
+                          (EXISTS (SELECT 1 FROM accounts_receivable child WHERE child.parent_id = ar.id)
+                           AND NOT EXISTS (
+                               SELECT 1 FROM accounts_receivable child
+                               WHERE child.parent_id = ar.id
+                               AND UPPER(child.status::text) != 'PAID'
+                           ))
+                          OR
+                          -- Conta simples sem parcelas: a própria conta está paga
+                          (NOT EXISTS (SELECT 1 FROM accounts_receivable child WHERE child.parent_id = ar.id)
+                           AND UPPER(ar.status::text) = 'PAID')
                       )
-                      AND EXISTS (
-                          SELECT 1 FROM accounts_receivable child
-                          WHERE child.parent_id = ar.id
-                      )
-                    ORDER BY ar.due_date
+                    ORDER BY ar.due_date DESC
                     LIMIT $1 OFFSET $2
                 """, limit, skip)
+
+            # PENDING/PARTIAL: Filtro normal
             else:
                 rows = await conn.fetch("""
                     SELECT ar.*,
-                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                        (SELECT MIN(child.due_date) FROM accounts_receivable child
+                         WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
                     WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
@@ -1018,10 +1044,14 @@ async def list_accounts_receivable(
                 """, limit, skip, status_upper)
 
             print(f"[AR] Encontradas {len(rows)} contas com status {status_upper}", flush=True)
+
+        # Listagem geral (sem filtro de status)
         else:
             rows = await conn.fetch("""
                 SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    (SELECT MIN(child.due_date) FROM accounts_receivable child
+                     WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
