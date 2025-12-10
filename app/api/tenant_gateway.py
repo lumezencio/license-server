@@ -967,15 +967,32 @@ async def list_accounts_receivable(
         elif status:
             # Converte status para UPPERCASE para comparar com ENUM
             status_upper = status.upper()
-            rows = await conn.fetch("""
-                SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
-                FROM accounts_receivable ar
-                LEFT JOIN customers c ON ar.customer_id = c.id
-                WHERE UPPER(ar.status::text) = $3
-                ORDER BY ar.due_date
-                LIMIT $1 OFFSET $2
-            """, limit, skip, status_upper)
+            print(f"[AR] Filtrando por status: {status_upper}", flush=True)
+
+            # Tratamento especial para OVERDUE (vencido) - é calculado dinamicamente
+            if status_upper == 'OVERDUE':
+                rows = await conn.fetch("""
+                    SELECT ar.*,
+                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                    FROM accounts_receivable ar
+                    LEFT JOIN customers c ON ar.customer_id = c.id
+                    WHERE ar.due_date < CURRENT_DATE
+                      AND UPPER(ar.status::text) IN ('PENDING', 'PARTIAL')
+                    ORDER BY ar.due_date
+                    LIMIT $1 OFFSET $2
+                """, limit, skip)
+            else:
+                rows = await conn.fetch("""
+                    SELECT ar.*,
+                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                    FROM accounts_receivable ar
+                    LEFT JOIN customers c ON ar.customer_id = c.id
+                    WHERE UPPER(ar.status::text) = $3
+                    ORDER BY ar.due_date
+                    LIMIT $1 OFFSET $2
+                """, limit, skip, status_upper)
+
+            print(f"[AR] Encontradas {len(rows)} contas com status {status_upper}", flush=True)
         else:
             rows = await conn.fetch("""
                 SELECT ar.*,
@@ -3423,10 +3440,9 @@ async def generate_promissory_pdf_batch(
     installment_ids: str = "",
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Gera PDF de Nota Promissória para as parcelas selecionadas - Design Profissional"""
+    """Gera UMA ÚNICA Nota Promissória com o VALOR TOTAL das parcelas selecionadas"""
     from fastapi.responses import Response
     from app.utils.promissoryGenerator import generate_promissory_pdf
-    from io import BytesIO
 
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
@@ -3434,7 +3450,7 @@ async def generate_promissory_pdf_batch(
     try:
         # Parse IDs das parcelas selecionadas
         selected_ids = [id.strip() for id in installment_ids.split(',') if id.strip()]
-        print(f"[PROMISSORY] === Iniciando geração de {len(selected_ids)} promissórias ===", flush=True)
+        print(f"[PROMISSORY] === Gerando promissória única para {len(selected_ids)} parcelas ===", flush=True)
 
         if not selected_ids:
             raise HTTPException(status_code=400, detail="Nenhuma parcela selecionada")
@@ -3463,9 +3479,12 @@ async def generate_promissory_pdf_batch(
                 'state': company.get('state'),
             }
 
-        # Gera um PDF profissional para cada parcela selecionada
-        pdfs = []
+        # Soma o valor de TODAS as parcelas selecionadas para gerar UMA promissória
+        total_value = 0.0
+        customer_data = None
         customer_name_for_file = "cliente"
+        latest_due_date = None
+        doc_numbers = []
 
         for installment_id in selected_ids:
             # Busca dados da parcela
@@ -3488,87 +3507,74 @@ async def generate_promissory_pdf_batch(
             if not installment:
                 continue
 
-            customer_name_for_file = installment['customer_name'] or 'cliente'
-
-            customer_address = ""
-            if installment['customer_address']:
-                customer_address = installment['customer_address']
-                if installment['customer_city']:
-                    customer_address += f" - {installment['customer_city']}"
-                if installment['customer_state']:
-                    customer_address += f"/{installment['customer_state']}"
-
-            customer_data = {
-                'name': installment['customer_name'] or 'Cliente',
-                'document': installment['customer_document'] or 'N/A',
-                'address': customer_address or 'Não informado',
-                'city': installment['customer_city'] or '',
-                'state': installment['customer_state'] or '',
-            }
-
-            # Calcula valor (saldo)
+            # Calcula valor (saldo devedor)
             amount = float(installment['amount'] or 0)
             paid = float(installment['paid_amount'] or 0)
             balance = amount - paid if paid > 0 else amount
+            total_value += balance
 
-            # Gera o PDF profissional
-            pdf_bytes = await generate_promissory_pdf(
-                company_data=company_data,
-                customer_data=customer_data,
-                total_value=balance,
-                due_date=installment['due_date'],
-                doc_number=installment['document_number'] or f"NP-{installment['id'][:8].upper()}"
-            )
-            pdfs.append(BytesIO(pdf_bytes))
-            print(f"[PROMISSORY] PDF {len(pdfs)} gerado para parcela {installment['installment_number']}", flush=True)
+            print(f"[PROMISSORY] Parcela {installment['installment_number']}: R$ {balance:.2f}", flush=True)
 
-        print(f"[PROMISSORY] Total de PDFs gerados: {len(pdfs)}", flush=True)
+            # Guarda dados do cliente (só precisa pegar uma vez)
+            if customer_data is None:
+                customer_name_for_file = installment['customer_name'] or 'cliente'
 
-        if not pdfs:
+                customer_address = ""
+                if installment['customer_address']:
+                    customer_address = installment['customer_address']
+                    if installment['customer_city']:
+                        customer_address += f" - {installment['customer_city']}"
+                    if installment['customer_state']:
+                        customer_address += f"/{installment['customer_state']}"
+
+                customer_data = {
+                    'name': installment['customer_name'] or 'Cliente',
+                    'document': installment['customer_document'] or 'N/A',
+                    'address': customer_address or 'Não informado',
+                    'city': installment['customer_city'] or '',
+                    'state': installment['customer_state'] or '',
+                }
+
+            # Pega a última data de vencimento
+            if installment['due_date']:
+                if latest_due_date is None or installment['due_date'] > latest_due_date:
+                    latest_due_date = installment['due_date']
+
+            # Coleta números dos documentos
+            doc_num = installment['document_number'] or f"P{installment['installment_number']}"
+            doc_numbers.append(doc_num)
+
+        if not customer_data or total_value <= 0:
             raise HTTPException(status_code=400, detail="Nenhuma parcela válida encontrada")
 
-        # Se há múltiplos PDFs, mescla em um único arquivo
-        if len(pdfs) == 1:
-            final_pdf = pdfs[0].getvalue()
-            print("[PROMISSORY] Apenas 1 PDF, retornando diretamente", flush=True)
-        else:
-            print(f"[PROMISSORY] Mesclando {len(pdfs)} PDFs...", flush=True)
-            try:
-                from PyPDF2 import PdfMerger
-                merger = PdfMerger()
-                for i, pdf in enumerate(pdfs):
-                    pdf.seek(0)
-                    merger.append(pdf)
-                    print(f"[PROMISSORY] PDF {i+1} adicionado ao merger", flush=True)
-                output = BytesIO()
-                merger.write(output)
-                output.seek(0)
-                final_pdf = output.getvalue()
-                merger.close()
-                print(f"[PROMISSORY] Merge concluído! Tamanho: {len(final_pdf)} bytes", flush=True)
-            except ImportError as e:
-                print(f"[PROMISSORY] ERRO: PyPDF2 não disponível: {e}", flush=True)
-                # Fallback: retornar apenas o primeiro PDF
-                final_pdf = pdfs[0].getvalue()
-            except Exception as e:
-                print(f"[PROMISSORY] ERRO no merge: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
-                # Fallback: retornar apenas o primeiro PDF
-                final_pdf = pdfs[0].getvalue()
+        print(f"[PROMISSORY] VALOR TOTAL: R$ {total_value:.2f} ({len(selected_ids)} parcelas)", flush=True)
+
+        # Gera número do documento único para a promissória
+        # Formato: NP-{primeiros 8 chars do account_id}-{quantidade de parcelas}
+        doc_number = f"NP-{account_id[:8].upper()}-{len(selected_ids)}P"
+
+        # Gera UMA ÚNICA promissória com o valor total
+        pdf_bytes = await generate_promissory_pdf(
+            company_data=company_data,
+            customer_data=customer_data,
+            total_value=total_value,
+            due_date=latest_due_date,
+            doc_number=doc_number
+        )
 
         # Nome do arquivo
         customer_name_clean = customer_name_for_file.replace(' ', '_')[:30]
         filename = f"promissoria_{customer_name_clean}_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
 
-        print(f"[PROMISSORY] Retornando PDF: {filename}, {len(final_pdf)} bytes", flush=True)
+        print(f"[PROMISSORY] PDF gerado: {filename}, {len(pdf_bytes)} bytes, Valor: R$ {total_value:.2f}", flush=True)
         return Response(
-            content=final_pdf,
+            content=pdf_bytes,
             media_type="application/pdf",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(final_pdf)),
-                "X-PDF-Pages": str(len(pdfs))  # Header customizado para debug
+                "Content-Length": str(len(pdf_bytes)),
+                "X-Total-Value": f"{total_value:.2f}",
+                "X-Installments-Count": str(len(selected_ids))
             }
         )
     finally:
