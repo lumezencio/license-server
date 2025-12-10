@@ -165,10 +165,11 @@ def draw_watermark(c):
     except Exception as e:
         logger.warning(f"Erro na marca d'água: {e}")
 
-def draw_header(c, company_data, y_position):
+def draw_header(c, company_data, y_position, logo_path=None):
     """
     V4.1 (INTACTA): Logo maior, borda arredondada e
     texto da empresa PERFEITAMENTE CENTRALIZADO (na área direita).
+    MODIFICADO: Recebe logo_path do tenant multi-tenant
     """
     largura = A4[0]
 
@@ -178,7 +179,11 @@ def draw_header(c, company_data, y_position):
     logo_size = 2.5*cm # LOGO MAIOR
 
     # 1. LOGO COM BORDA COMPOSTA ARREDONDADA
-    logo_path = Path("static/company/logomarca.png")
+    # Multi-tenant: usa logo_path do tenant se fornecido
+    if logo_path:
+        logo_file = Path(logo_path)
+    else:
+        logo_file = Path("static/company/logomarca.png")
 
     logo_box_width = logo_size + 1.0*cm # Mais espaço de "respiro"
     logo_box_height = logo_size + 1.0*cm
@@ -201,13 +206,16 @@ def draw_header(c, company_data, y_position):
            logo_box_width - (2*inset_logo), logo_box_height - (2*inset_logo),
            corner_radius - inset_logo/2, stroke=1, fill=0)
 
-    if logo_path.exists():
+    if logo_file.exists():
         try:
-            c.drawImage(str(logo_path), logo_x, logo_box_y + (logo_box_height - logo_size)/2,
+            c.drawImage(str(logo_file), logo_x, logo_box_y + (logo_box_height - logo_size)/2,
                         width=logo_size, height=logo_size,
                         mask='auto', preserveAspectRatio=True)
+            logger.info(f"Logo carregado com sucesso: {logo_file}")
         except Exception as e:
             logger.warning(f"Não foi possível desenhar o logo: {e}")
+    else:
+        logger.warning(f"Arquivo de logo não encontrado: {logo_file}")
 
     # 2. DADOS DA EMPRESA (CENTRALIZADOS USANDO PARAGRAPH)
     text_x_start = logo_box_x + logo_box_width + ReceiptDesign.SPACE_M
@@ -522,10 +530,10 @@ def draw_legal_articles(c):
 # 🚀 FUNÇÃO PRINCIPAL (GERADOR)
 # ==========================================
 
-async def generate_receipt_pdf(installment_data: dict, customer_data: dict, company_data: dict = None) -> bytes:
+async def generate_receipt_pdf(installment_data: dict, customer_data: dict, company_data: dict = None, logo_path: str = None) -> bytes:
     """
     Gera PDF do recibo com design "FARAÔNICO E INVEJÁVEL" (V4.3)
-    MODIFICADO: Chama a nova 'draw_legal_articles'
+    MODIFICADO: Recebe logo_path do tenant multi-tenant
     """
 
     from io import BytesIO
@@ -545,8 +553,8 @@ async def generate_receipt_pdf(installment_data: dict, customer_data: dict, comp
         # 1. MARCA D'ÁGUA (INTACTO)
         draw_watermark(c)
 
-        # 2. CABEÇALHO (INTACTO)
-        y_pos = draw_header(c, company_data, y_pos)
+        # 2. CABEÇALHO (com logo do tenant)
+        y_pos = draw_header(c, company_data, y_pos, logo_path=logo_path)
 
         # 3. TÍTULO (INTACTO)
         y_pos = draw_title(c, y_pos)

@@ -1367,6 +1367,7 @@ async def generate_installment_receipt(
         }
 
         company_data = None
+        logo_full_path = None
         if company:
             company_data = {
                 'legal_name': company.get('legal_name') or company.get('trade_name') or company.get('name'),
@@ -1379,9 +1380,16 @@ async def generate_installment_receipt(
                 'city': company.get('city'),
                 'state': company.get('state'),
             }
+            # Multi-tenant: Busca caminho completo da logo
+            if company.get('logo_path'):
+                if os.path.exists("/app/uploads"):
+                    logo_full_path = f"/app/uploads/{company.get('logo_path')}"
+                else:
+                    upload_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
+                    logo_full_path = os.path.join(upload_base, company.get('logo_path'))
 
-        # Gera o PDF Faraônico
-        pdf_bytes = await generate_receipt_pdf(installment_data, customer_data, company_data)
+        # Gera o PDF Faraônico com logo do tenant
+        pdf_bytes = await generate_receipt_pdf(installment_data, customer_data, company_data, logo_path=logo_full_path)
 
         # Nome do arquivo
         customer_name_clean = (installment['customer_name'] or 'cliente').replace(' ', '_')[:30]
