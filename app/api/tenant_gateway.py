@@ -2027,6 +2027,51 @@ async def get_company(
         await conn.close()
 
 
+
+
+@router.put("/company/{company_id}")
+async def update_company(
+    company_id: str,
+    company_data: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza dados da empresa do tenant"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        existing = await conn.fetchrow("SELECT id FROM companies WHERE id = $1", company_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+
+        allowed_fields = [
+            'person_type', 'trade_name', 'legal_name', 'document',
+            'state_registration', 'municipal_registration', 'email',
+            'phone', 'mobile', 'website', 'zip_code', 'street',
+            'number', 'complement', 'neighborhood', 'city', 'state',
+            'country', 'bank_name', 'bank_agency', 'bank_account',
+            'pix_key', 'logo_path', 'description', 'notes', 'is_active'
+        ]
+
+        update_data = {k: v for k, v in company_data.items() if k in allowed_fields}
+        if not update_data:
+            raise HTTPException(status_code=400, detail="Nenhum campo válido para atualizar")
+
+        set_clauses = []
+        values = []
+        for i, (key, value) in enumerate(update_data.items(), 1):
+            set_clauses.append(f"{key} = ${i}")
+            values.append(value)
+
+        values.append(company_id)
+        query = f"UPDATE companies SET {', '.join(set_clauses)}, updated_at = NOW() WHERE id = ${len(values)} RETURNING *"
+
+        row = await conn.fetchrow(query, *values)
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
 # === ENDPOINTS - LEGAL CALCULATIONS ===
 
 @router.get("/legal-calculations")
