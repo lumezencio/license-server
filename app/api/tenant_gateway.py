@@ -953,14 +953,16 @@ async def list_accounts_receivable(
         total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
 
         # Schema legado: customers usa first_name/last_name em vez de name
+        # IMPORTANTE: Retorna apenas contas PAI (installment_number = 0)
         if search:
             rows = await conn.fetch("""
                 SELECT ar.*,
                     COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
-                WHERE c.first_name ILIKE $1 OR c.last_name ILIKE $1
-                    OR c.company_name ILIKE $1 OR ar.description ILIKE $1
+                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                  AND (c.first_name ILIKE $1 OR c.last_name ILIKE $1
+                    OR c.company_name ILIKE $1 OR ar.description ILIKE $1)
                 ORDER BY ar.due_date
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
@@ -976,8 +978,30 @@ async def list_accounts_receivable(
                         COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
-                    WHERE ar.due_date < CURRENT_DATE
+                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                      AND ar.due_date < CURRENT_DATE
                       AND UPPER(ar.status::text) IN ('PENDING', 'PARTIAL')
+                    ORDER BY ar.due_date
+                    LIMIT $1 OFFSET $2
+                """, limit, skip)
+            elif status_upper == 'PAID':
+                # Para PAID, buscar contas PAI que estão totalmente pagas
+                # Uma conta PAI está PAID quando todas suas parcelas estão pagas
+                rows = await conn.fetch("""
+                    SELECT ar.*,
+                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                    FROM accounts_receivable ar
+                    LEFT JOIN customers c ON ar.customer_id = c.id
+                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM accounts_receivable child
+                          WHERE child.parent_id = ar.id
+                          AND UPPER(child.status::text) != 'PAID'
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM accounts_receivable child
+                          WHERE child.parent_id = ar.id
+                      )
                     ORDER BY ar.due_date
                     LIMIT $1 OFFSET $2
                 """, limit, skip)
@@ -987,7 +1011,8 @@ async def list_accounts_receivable(
                         COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
-                    WHERE UPPER(ar.status::text) = $3
+                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                      AND UPPER(ar.status::text) = $3
                     ORDER BY ar.due_date
                     LIMIT $1 OFFSET $2
                 """, limit, skip, status_upper)
@@ -999,6 +1024,7 @@ async def list_accounts_receivable(
                     COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
+                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
                 ORDER BY ar.due_date
                 LIMIT $1 OFFSET $2
             """, limit, skip)
