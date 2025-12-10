@@ -1204,6 +1204,161 @@ async def pay_account_receivable(
         await conn.close()
 
 
+@router.get("/accounts-receivable/{account_id}/installments/{installment_number}/receipt")
+async def generate_installment_receipt(
+    account_id: str,
+    installment_number: int,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Gera recibo PDF de uma parcela paga"""
+    from fastapi.responses import Response
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    import io
+
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca a parcela específica
+        installment = await conn.fetchrow("""
+            SELECT ar.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                c.cpf_cnpj as customer_document,
+                c.email as customer_email,
+                c.phone as customer_phone,
+                c.address as customer_address,
+                c.city as customer_city,
+                c.state as customer_state
+            FROM accounts_receivable ar
+            LEFT JOIN customers c ON ar.customer_id = c.id
+            WHERE ar.parent_id = $1 AND ar.installment_number = $2
+        """, account_id, installment_number)
+
+        if not installment:
+            # Tenta buscar a conta diretamente (conta simples sem parcelas)
+            installment = await conn.fetchrow("""
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    c.cpf_cnpj as customer_document,
+                    c.email as customer_email,
+                    c.phone as customer_phone,
+                    c.address as customer_address,
+                    c.city as customer_city,
+                    c.state as customer_state
+                FROM accounts_receivable ar
+                LEFT JOIN customers c ON ar.customer_id = c.id
+                WHERE ar.id = $1
+            """, account_id)
+
+        if not installment:
+            raise HTTPException(status_code=404, detail="Parcela não encontrada")
+
+        # Busca dados da empresa
+        company = await conn.fetchrow("SELECT * FROM companies LIMIT 1")
+
+        # Gera o PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=20*mm, bottomMargin=20*mm)
+        styles = getSampleStyleSheet()
+
+        # Estilos customizados
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, alignment=TA_CENTER, spaceAfter=10)
+        subtitle_style = ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=12, alignment=TA_CENTER, spaceAfter=20)
+        normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=10, spaceAfter=5)
+        bold_style = ParagraphStyle('Bold', parent=styles['Normal'], fontSize=10, fontName='Helvetica-Bold')
+        right_style = ParagraphStyle('Right', parent=styles['Normal'], fontSize=10, alignment=TA_RIGHT)
+
+        elements = []
+
+        # Cabeçalho
+        company_name = company['name'] if company else tenant.trade_name or tenant.name
+        elements.append(Paragraph(f"<b>{company_name}</b>", title_style))
+        elements.append(Paragraph("RECIBO DE PAGAMENTO", subtitle_style))
+        elements.append(Spacer(1, 10*mm))
+
+        # Número do recibo
+        receipt_number = f"REC-{installment['id'][:8].upper()}"
+        elements.append(Paragraph(f"<b>Recibo Nº:</b> {receipt_number}", normal_style))
+        elements.append(Spacer(1, 5*mm))
+
+        # Dados do cliente
+        elements.append(Paragraph("<b>DADOS DO CLIENTE</b>", bold_style))
+        elements.append(Paragraph(f"Nome: {installment['customer_name'] or 'N/A'}", normal_style))
+        elements.append(Paragraph(f"CPF/CNPJ: {installment['customer_document'] or 'N/A'}", normal_style))
+        if installment['customer_address']:
+            address = f"{installment['customer_address']}"
+            if installment['customer_city']:
+                address += f" - {installment['customer_city']}"
+            if installment['customer_state']:
+                address += f"/{installment['customer_state']}"
+            elements.append(Paragraph(f"Endereço: {address}", normal_style))
+        elements.append(Spacer(1, 10*mm))
+
+        # Dados do pagamento
+        elements.append(Paragraph("<b>DADOS DO PAGAMENTO</b>", bold_style))
+
+        # Tabela de valores
+        payment_data = [
+            ["Descrição", installment['description'] or "Conta a Receber"],
+            ["Valor Original", f"R$ {float(installment['amount']):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')],
+            ["Valor Pago", f"R$ {float(installment['paid_amount'] or 0):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')],
+            ["Data de Vencimento", installment['due_date'].strftime('%d/%m/%Y') if installment['due_date'] else 'N/A'],
+            ["Data de Pagamento", installment['payment_date'].strftime('%d/%m/%Y') if installment['payment_date'] else datetime.utcnow().strftime('%d/%m/%Y')],
+            ["Status", "PAGO" if installment['status'] in ['PAID', 'paid'] else installment['status']],
+        ]
+
+        if installment['installment_number']:
+            payment_data.insert(1, ["Parcela", f"{installment['installment_number']}/{installment['total_installments']}"])
+
+        table = Table(payment_data, colWidths=[50*mm, 100*mm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.Color(0.9, 0.9, 0.9)),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('PADDING', (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 15*mm))
+
+        # Declaração
+        valor_extenso = f"R$ {float(installment['paid_amount'] or installment['amount']):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        declaration = f"""
+        Declaramos para os devidos fins que recebemos de <b>{installment['customer_name'] or 'Cliente'}</b>,
+        portador(a) do CPF/CNPJ <b>{installment['customer_document'] or 'N/A'}</b>,
+        a importância de <b>{valor_extenso}</b>, referente a: {installment['description'] or 'Conta a Receber'}.
+        """
+        elements.append(Paragraph(declaration, normal_style))
+        elements.append(Spacer(1, 20*mm))
+
+        # Assinatura
+        elements.append(Paragraph("_" * 50, ParagraphStyle('Center', alignment=TA_CENTER)))
+        elements.append(Paragraph(f"<b>{company_name}</b>", ParagraphStyle('Center', alignment=TA_CENTER, fontSize=10)))
+        elements.append(Spacer(1, 10*mm))
+
+        # Data de emissão
+        elements.append(Paragraph(f"Emitido em: {datetime.utcnow().strftime('%d/%m/%Y às %H:%M')}", right_style))
+
+        doc.build(elements)
+        buffer.seek(0)
+
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=recibo_{receipt_number}.pdf"
+            }
+        )
+    finally:
+        await conn.close()
+
+
 @router.get("/accounts-receivable/customers/{customer_id}")
 async def get_customer_for_receivable(
     customer_id: str,
