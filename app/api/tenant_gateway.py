@@ -222,16 +222,26 @@ async def list_customers(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado usa first_name/last_name e cpf_cnpj
         if search:
             rows = await conn.fetch("""
-                SELECT * FROM customers
-                WHERE name ILIKE $1 OR document ILIKE $1 OR email ILIKE $1
-                ORDER BY name
+                SELECT *,
+                    COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                    cpf_cnpj as document
+                FROM customers
+                WHERE first_name ILIKE $1 OR last_name ILIKE $1
+                    OR company_name ILIKE $1 OR cpf_cnpj ILIKE $1 OR email ILIKE $1
+                ORDER BY first_name, last_name
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         else:
             rows = await conn.fetch("""
-                SELECT * FROM customers ORDER BY name LIMIT $1 OFFSET $2
+                SELECT *,
+                    COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                    cpf_cnpj as document
+                FROM customers
+                ORDER BY first_name, last_name
+                LIMIT $1 OFFSET $2
             """, limit, skip)
 
         return [row_to_dict(row) for row in rows]
@@ -249,10 +259,12 @@ async def get_customer(
     conn = await get_tenant_connection(tenant)
 
     try:
-        row = await conn.fetchrow(
-            "SELECT * FROM customers WHERE id = $1",
-            customer_id
-        )
+        row = await conn.fetchrow("""
+            SELECT *,
+                COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                cpf_cnpj as document
+            FROM customers WHERE id = $1
+        """, customer_id)
         if not row:
             raise HTTPException(status_code=404, detail="Cliente nao encontrado")
         return row_to_dict(row)
@@ -353,16 +365,28 @@ async def list_products(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado usa sku em vez de code, barcode_ean em vez de barcode
         if search:
             rows = await conn.fetch("""
-                SELECT * FROM products
-                WHERE name ILIKE $1 OR code ILIKE $1 OR barcode ILIKE $1
+                SELECT *,
+                    COALESCE(code, sku) as code,
+                    COALESCE(barcode_ean, barcode_ean128) as barcode,
+                    unit_of_measure as unit
+                FROM products
+                WHERE name ILIKE $1 OR sku ILIKE $1 OR code ILIKE $1
+                    OR barcode_ean ILIKE $1
                 ORDER BY name
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         else:
             rows = await conn.fetch("""
-                SELECT * FROM products ORDER BY name LIMIT $1 OFFSET $2
+                SELECT *,
+                    COALESCE(code, sku) as code,
+                    COALESCE(barcode_ean, barcode_ean128) as barcode,
+                    unit_of_measure as unit
+                FROM products
+                ORDER BY name
+                LIMIT $1 OFFSET $2
             """, limit, skip)
 
         return [row_to_dict(row) for row in rows]
@@ -480,16 +504,26 @@ async def list_suppliers(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado usa company_name/trade_name/name e cnpj/cpf
         if search:
             rows = await conn.fetch("""
-                SELECT * FROM suppliers
-                WHERE name ILIKE $1 OR document ILIKE $1 OR email ILIKE $1
-                ORDER BY name
+                SELECT *,
+                    COALESCE(company_name, trade_name, name) as display_name,
+                    COALESCE(cnpj, cpf) as document
+                FROM suppliers
+                WHERE company_name ILIKE $1 OR trade_name ILIKE $1 OR name ILIKE $1
+                    OR cnpj ILIKE $1 OR cpf ILIKE $1 OR email ILIKE $1
+                ORDER BY COALESCE(company_name, trade_name, name)
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         else:
             rows = await conn.fetch("""
-                SELECT * FROM suppliers ORDER BY name LIMIT $1 OFFSET $2
+                SELECT *,
+                    COALESCE(company_name, trade_name, name) as display_name,
+                    COALESCE(cnpj, cpf) as document
+                FROM suppliers
+                ORDER BY COALESCE(company_name, trade_name, name)
+                LIMIT $1 OFFSET $2
             """, limit, skip)
 
         return [row_to_dict(row) for row in rows]
@@ -590,6 +624,17 @@ async def list_employees(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Verifica se tabela employees existe
+        table_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'employees'
+            )
+        """)
+
+        if not table_exists:
+            return []
+
         if search:
             rows = await conn.fetch("""
                 SELECT * FROM employees
@@ -654,24 +699,34 @@ async def get_dashboard_stats(
         customers_count = await conn.fetchval("SELECT COUNT(*) FROM customers")
         products_count = await conn.fetchval("SELECT COUNT(*) FROM products")
         suppliers_count = await conn.fetchval("SELECT COUNT(*) FROM suppliers")
-        employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees")
 
-        # Vendas do mes
+        # Verifica se tabela employees existe
+        employees_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'employees'
+            )
+        """)
+        employees_count = 0
+        if employees_exists:
+            employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees")
+
+        # Vendas do mes - schema legado usa total_amount em vez de total
         sales_month = await conn.fetchval("""
-            SELECT COALESCE(SUM(total), 0) FROM sales
+            SELECT COALESCE(SUM(COALESCE(total_amount, 0)), 0) FROM sales
             WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
         """)
 
-        # Contas a receber pendentes
+        # Contas a receber pendentes - schema legado usa ENUM com valores UPPERCASE
         receivables = await conn.fetchval("""
             SELECT COALESCE(SUM(amount - paid_amount), 0) FROM accounts_receivable
-            WHERE status = 'pending'
+            WHERE status::text IN ('pending', 'PENDING')
         """)
 
-        # Contas a pagar pendentes
+        # Contas a pagar pendentes - schema legado usa amount_paid em vez de paid_amount
         payables = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - paid_amount), 0) FROM accounts_payable
-            WHERE status = 'pending'
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING')
         """)
 
         return {
@@ -700,8 +755,10 @@ async def list_sales(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado: customers usa first_name/last_name
         rows = await conn.fetch("""
-            SELECT s.*, c.name as customer_name
+            SELECT s.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
             FROM sales s
             LEFT JOIN customers c ON s.customer_id = c.id
             ORDER BY s.sale_date DESC
@@ -726,8 +783,10 @@ async def list_purchases(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado: suppliers usa company_name/trade_name/name
         rows = await conn.fetch("""
-            SELECT p.*, s.name as supplier_name
+            SELECT p.*,
+                COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
             FROM purchases p
             LEFT JOIN suppliers s ON p.supplier_id = s.id
             ORDER BY p.purchase_date DESC
@@ -758,18 +817,22 @@ async def list_accounts_receivable(
         # Conta total para paginacao
         total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
 
+        # Schema legado: customers usa first_name/last_name em vez de name
         if search:
             rows = await conn.fetch("""
-                SELECT ar.*, c.name as customer_name
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
-                WHERE c.name ILIKE $1 OR ar.description ILIKE $1
+                WHERE c.first_name ILIKE $1 OR c.last_name ILIKE $1
+                    OR c.company_name ILIKE $1 OR ar.description ILIKE $1
                 ORDER BY ar.due_date
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         elif status:
             rows = await conn.fetch("""
-                SELECT ar.*, c.name as customer_name
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 WHERE ar.status = $3
@@ -778,7 +841,8 @@ async def list_accounts_receivable(
             """, limit, skip, status)
         else:
             rows = await conn.fetch("""
-                SELECT ar.*, c.name as customer_name
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
                 ORDER BY ar.due_date
@@ -802,7 +866,8 @@ async def get_account_receivable(
 
     try:
         row = await conn.fetchrow("""
-            SELECT ar.*, c.name as customer_name
+            SELECT ar.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE ar.id = $1
@@ -810,6 +875,46 @@ async def get_account_receivable(
         if not row:
             raise HTTPException(status_code=404, detail="Conta nao encontrada")
         return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-receivable/{account_id}/installments")
+async def get_account_installments(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna todas as parcelas de uma conta a receber (conta pai)"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca a conta pai e todas as parcelas filhas
+        rows = await conn.fetch("""
+            SELECT ar.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+            FROM accounts_receivable ar
+            LEFT JOIN customers c ON ar.customer_id = c.id
+            WHERE ar.id = $1 OR ar.parent_id = $1
+            ORDER BY ar.installment_number
+        """, account_id)
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+
+        # Retorna apenas as parcelas (installment_number > 0)
+        # Se nao houver parcelas, retorna a conta original
+        items = []
+        for row in rows:
+            row_dict = row_to_dict(row)
+            installment_num = row_dict.get("installment_number", 0)
+            if installment_num > 0:
+                items.append(row_dict)
+            elif len(rows) == 1:
+                # Conta simples sem parcelas
+                items.append(row_dict)
+
+        return items
     finally:
         await conn.close()
 
@@ -946,10 +1051,13 @@ async def get_customer_for_receivable(
     conn = await get_tenant_connection(tenant)
 
     try:
-        row = await conn.fetchrow(
-            "SELECT id, name, document as cpf_cnpj, email, phone FROM customers WHERE id = $1",
-            customer_id
-        )
+        # Schema legado: customers usa first_name/last_name e cpf_cnpj
+        row = await conn.fetchrow("""
+            SELECT id,
+                COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                cpf_cnpj, email, phone
+            FROM customers WHERE id = $1
+        """, customer_id)
         if not row:
             raise HTTPException(status_code=404, detail="Cliente nao encontrado")
         return row_to_dict(row)
@@ -1012,18 +1120,22 @@ async def list_accounts_payable(
         # Conta total para paginacao
         total = await conn.fetchval("SELECT COUNT(*) FROM accounts_payable") or 0
 
+        # Schema legado: suppliers usa company_name/trade_name/name
         if search:
             rows = await conn.fetch("""
-                SELECT ap.*, s.name as supplier_name
+                SELECT ap.*,
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE s.name ILIKE $1 OR ap.description ILIKE $1
+                WHERE s.company_name ILIKE $1 OR s.trade_name ILIKE $1
+                    OR s.name ILIKE $1 OR ap.description ILIKE $1
                 ORDER BY ap.due_date
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         elif status:
             rows = await conn.fetch("""
-                SELECT ap.*, s.name as supplier_name
+                SELECT ap.*,
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
                 WHERE ap.status = $3
@@ -1032,7 +1144,8 @@ async def list_accounts_payable(
             """, limit, skip, status)
         else:
             rows = await conn.fetch("""
-                SELECT ap.*, s.name as supplier_name
+                SELECT ap.*,
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
                 ORDER BY ap.due_date
@@ -1056,7 +1169,8 @@ async def get_account_payable(
 
     try:
         row = await conn.fetchrow("""
-            SELECT ap.*, s.name as supplier_name
+            SELECT ap.*,
+                COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
             FROM accounts_payable ap
             LEFT JOIN suppliers s ON ap.supplier_id = s.id
             WHERE ap.id = $1
@@ -1252,10 +1366,17 @@ async def get_current_user(
     conn = await get_tenant_connection(tenant)
 
     try:
-        row = await conn.fetchrow(
-            "SELECT id, email, name, is_admin, is_active FROM users WHERE id::text = $1",
-            user["user_id"]
-        )
+        # Schema legado usa full_name e role
+        row = await conn.fetchrow("""
+            SELECT id, email,
+                COALESCE(full_name, username, email) as name,
+                full_name,
+                username,
+                role,
+                (role = 'admin' OR role = 'superadmin') as is_admin,
+                is_active
+            FROM users WHERE id::text = $1
+        """, user["user_id"])
         if row:
             return row_to_dict(row)
         # Fallback com dados do token
@@ -1283,10 +1404,19 @@ async def list_users(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado usa full_name e role em vez de name e is_admin
         rows = await conn.fetch("""
-            SELECT id, email, name, is_admin, is_active, created_at
+            SELECT id, email,
+                COALESCE(full_name, username, email) as name,
+                full_name,
+                username,
+                role,
+                (role = 'admin' OR role = 'superadmin') as is_admin,
+                is_active,
+                created_at
             FROM users
-            ORDER BY name
+            WHERE deleted_at IS NULL
+            ORDER BY COALESCE(full_name, username, email)
             LIMIT $1 OFFSET $2
         """, limit, skip)
 
@@ -1330,24 +1460,63 @@ async def get_dashboard_overview(
         customers_count = await conn.fetchval("SELECT COUNT(*) FROM customers") or 0
         products_count = await conn.fetchval("SELECT COUNT(*) FROM products") or 0
         suppliers_count = await conn.fetchval("SELECT COUNT(*) FROM suppliers") or 0
-        employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees") or 0
 
-        # Vendas do mes
+        # Verifica se tabela employees existe
+        employees_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'employees'
+            )
+        """)
+        employees_count = 0
+        if employees_exists:
+            employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees") or 0
+
+        # Vendas do mes - schema legado usa total_amount em vez de total
         sales_month = await conn.fetchval("""
-            SELECT COALESCE(SUM(total), 0) FROM sales
+            SELECT COALESCE(SUM(COALESCE(total_amount, 0)), 0) FROM sales
             WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
         """) or 0
 
-        # Contas a receber pendentes
+        # Contas a receber - pendentes (exclui contas PAI de parcelamentos para evitar duplicacao)
+        # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
         receivables_pending = await conn.fetchval("""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status = 'pending'
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (
+                parent_id IS NOT NULL  -- Parcelas filhas
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))  -- Contas simples
+            )
         """) or 0
 
-        # Contas a pagar pendentes
+        # Contas a receber - recebidas (mesma logica: filhas + simples)
+        receivables_received = await conn.fetchval("""
+            SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (
+                parent_id IS NOT NULL
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+            )
+        """) or 0
+
+        # Contas a receber - vencidas (mesma logica: filhas + simples)
+        receivables_overdue = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND due_date < CURRENT_DATE
+            AND is_active = true
+            AND (
+                parent_id IS NOT NULL
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+            )
+        """) or 0
+
+        # Contas a pagar pendentes - schema legado usa amount_paid ou balance
         payables_pending = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
-            WHERE status = 'pending'
+            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING')
         """) or 0
 
         return {
@@ -1358,6 +1527,11 @@ async def get_dashboard_overview(
             "sales_month": float(sales_month),
             "accounts_receivable": float(receivables_pending),
             "accounts_payable": float(payables_pending),
+            # Campos adicionais para o frontend
+            "receivable_pending": float(receivables_pending),
+            "receivable_received": float(receivables_received),
+            "receivable_overdue": float(receivables_overdue),
+            "payable_pending": float(payables_pending),
             "revenue_today": 0.0,
             "revenue_week": 0.0,
             "revenue_month": float(sales_month),
@@ -1379,21 +1553,35 @@ async def get_accounts_receivable_summary(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Filtro para excluir contas PAI de parcelamentos (evita duplicacao)
+        # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
+        filter_clause = """
+            AND is_active = true
+            AND (
+                parent_id IS NOT NULL
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+            )
+        """
+
         # Valor total pendente (a receber)
-        total_pending = await conn.fetchval("""
+        total_pending = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status IN ('pending', 'partial')
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            {filter_clause}
         """) or 0
 
         # Valor total pago
-        total_paid = await conn.fetchval("""
+        total_paid = await conn.fetchval(f"""
             SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
+            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+            {filter_clause}
         """) or 0
 
         # Valor total vencido
-        total_overdue = await conn.fetchval("""
+        total_overdue = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status IN ('pending', 'partial') AND due_date < CURRENT_DATE
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND due_date < CURRENT_DATE
+            {filter_clause}
         """) or 0
 
         return {
@@ -1414,30 +1602,39 @@ async def get_accounts_receivable_detailed(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Contagens
-        count_total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
-        count_pending = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status IN ('pending', 'partial')") or 0
-        count_paid = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status = 'paid'") or 0
-        count_overdue = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE status IN ('pending', 'partial') AND due_date < CURRENT_DATE") or 0
+        # Filtro para excluir contas PAI de parcelamentos (evita duplicacao)
+        filter_no_parent = """
+            AND is_active = true
+            AND (
+                parent_id IS NOT NULL
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+            )
+        """
 
-        # Valores
-        amount_total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable") or 0
-        amount_paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable") or 0
-        amount_balance = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status IN ('pending', 'partial')") or 0
-        amount_overdue = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status IN ('pending', 'partial') AND due_date < CURRENT_DATE") or 0
+        # Contagens (excluindo contas PAI de parcelamentos)
+        count_total = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE 1=1 {filter_no_parent}") or 0
+        count_pending = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        count_paid = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE status::text IN ('paid', 'PAID') {filter_no_parent}") or 0
+        count_overdue = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND due_date < CURRENT_DATE {filter_no_parent}") or 0
+
+        # Valores (excluindo contas PAI de parcelamentos)
+        amount_total = await conn.fetchval(f"SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable WHERE 1=1 {filter_no_parent}") or 0
+        amount_paid = await conn.fetchval(f"SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        amount_balance = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        amount_overdue = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND due_date < CURRENT_DATE {filter_no_parent}") or 0
 
         # Ticket medio
         avg_ticket = float(amount_total) / float(count_total) if count_total > 0 else 0
 
-        # Vencimentos
-        due_today_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status IN ('pending', 'partial')") or 0
-        due_today_amount = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status IN ('pending', 'partial')") or 0
+        # Vencimentos (excluindo contas PAI de parcelamentos)
+        due_today_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        due_today_amount = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
 
-        due_week_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status IN ('pending', 'partial')") or 0
-        due_week_amount = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status IN ('pending', 'partial')") or 0
+        due_week_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        due_week_amount = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
 
-        due_month_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status IN ('pending', 'partial')") or 0
-        due_month_amount = await conn.fetchval("SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status IN ('pending', 'partial')") or 0
+        due_month_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        due_month_amount = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
 
         # Percentuais
         pct_paid = (float(count_paid) / float(count_total) * 100) if count_total > 0 else 0
@@ -1493,15 +1690,16 @@ async def get_accounts_payable_summary(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado usa amount_paid em vez de paid_amount
         total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable") or 0
-        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_payable") or 0
+        paid = await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable") or 0
         pending = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
-            WHERE status = 'pending'
+            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING')
         """) or 0
         overdue = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
-            WHERE status = 'pending' AND due_date < CURRENT_DATE
+            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING') AND due_date < CURRENT_DATE
         """) or 0
 
         return {
@@ -1510,8 +1708,8 @@ async def get_accounts_payable_summary(
             "pending": float(pending),
             "overdue": float(overdue),
             "count_total": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable") or 0,
-            "count_pending": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status = 'pending'") or 0,
-            "count_paid": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status = 'paid'") or 0
+            "count_pending": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status::text IN ('pending', 'PENDING')") or 0,
+            "count_paid": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status::text IN ('paid', 'PAID')") or 0
         }
     finally:
         await conn.close()
@@ -1526,11 +1724,12 @@ async def get_accounts_payable_detailed(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado usa amount_paid em vez de paid_amount
         total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable") or 0
-        paid = await conn.fetchval("SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_payable") or 0
+        paid = await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable") or 0
         pending = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_payable
-            WHERE status = 'pending'
+            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING')
         """) or 0
 
         return {
@@ -1591,10 +1790,13 @@ async def get_reports_customers_list(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Schema legado: customers usa first_name/last_name e cpf_cnpj
         rows = await conn.fetch("""
-            SELECT id, name, document, email, phone
+            SELECT id,
+                COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                cpf_cnpj as document, email, phone
             FROM customers
-            ORDER BY name
+            ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)
             LIMIT 1000
         """)
         return [row_to_dict(row) for row in rows]
