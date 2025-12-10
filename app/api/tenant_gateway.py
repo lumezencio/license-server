@@ -1276,7 +1276,9 @@ async def generate_installment_receipt(
         elements = []
 
         # Cabeçalho
-        company_name = company['name'] if company else tenant.trade_name or tenant.name
+        company_name = (company.get('name') or company.get('trade_name') or company.get('legal_name') or '') if company else ''
+        if not company_name:
+            company_name = tenant.trade_name or tenant.name
         elements.append(Paragraph(f"<b>{company_name}</b>", title_style))
         elements.append(Paragraph("RECIBO DE PAGAMENTO", subtitle_style))
         elements.append(Spacer(1, 10*mm))
@@ -3460,5 +3462,277 @@ async def get_products_stats(
             "low_stock_products": low_stock,
             "total_stock_value": 0.0
         }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - PROMISSORY NOTES (NOTAS PROMISSÓRIAS) ===
+
+@router.get("/promissory/{account_id}/installments-for-promissory")
+async def get_installments_for_promissory(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista parcelas pendentes para geração de nota promissória"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca parcelas filhas pendentes (installment_number > 0, status != PAID)
+        rows = await conn.fetch("""
+            SELECT ar.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                c.cpf_cnpj as customer_document
+            FROM accounts_receivable ar
+            LEFT JOIN customers c ON ar.customer_id = c.id
+            WHERE ar.parent_id = $1
+              AND ar.installment_number > 0
+              AND ar.status NOT IN ('PAID', 'paid')
+            ORDER BY ar.installment_number
+        """, account_id)
+
+        if not rows:
+            # Tenta buscar a própria conta se não tiver parcelas (conta simples)
+            rows = await conn.fetch("""
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    c.cpf_cnpj as customer_document
+                FROM accounts_receivable ar
+                LEFT JOIN customers c ON ar.customer_id = c.id
+                WHERE ar.id = $1
+                  AND ar.status NOT IN ('PAID', 'paid')
+            """, account_id)
+
+        items = []
+        total_pending = 0.0
+
+        for row in rows:
+            amount = float(row['amount'] or 0)
+            paid = float(row['paid_amount'] or 0)
+            balance = amount - paid
+
+            items.append({
+                "id": str(row['id']),
+                "installment_number": row['installment_number'] or 1,
+                "total_installments": row['total_installments'] or 1,
+                "document_number": row.get('document_number') or f"DOC-{str(row['id'])[:8].upper()}",
+                "due_date": row['due_date'].isoformat() if row['due_date'] else None,
+                "amount": amount,
+                "paid_amount": paid,
+                "balance": balance,
+                "status": row['status'],
+                "customer_name": row['customer_name'],
+                "customer_document": row['customer_document']
+            })
+            total_pending += balance
+
+        return {
+            "items": items,
+            "total_pending": total_pending
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/promissory/{account_id}/generate")
+async def generate_promissory_pdf(
+    account_id: str,
+    installment_ids: str = "",
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Gera PDF de Nota Promissória para as parcelas selecionadas"""
+    from fastapi.responses import Response
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    import io
+
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Parse IDs das parcelas selecionadas
+        selected_ids = [id.strip() for id in installment_ids.split(',') if id.strip()]
+
+        if not selected_ids:
+            raise HTTPException(status_code=400, detail="Nenhuma parcela selecionada")
+
+        # Busca dados da empresa
+        company = await conn.fetchrow("SELECT * FROM companies LIMIT 1")
+        company_name = ''
+        if company:
+            company_name = company.get('name') or company.get('trade_name') or company.get('legal_name') or ''
+        if not company_name:
+            company_name = tenant.trade_name or tenant.name
+
+        company_cnpj = company.get('cnpj') or '' if company else ''
+        company_address = ""
+        if company:
+            parts = []
+            if company.get('address'):
+                parts.append(company['address'])
+            if company.get('city'):
+                parts.append(company['city'])
+            if company.get('state'):
+                parts.append(company['state'])
+            company_address = ", ".join(parts)
+
+        # Gera o PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
+        styles = getSampleStyleSheet()
+
+        # Estilos
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, alignment=TA_CENTER, spaceAfter=5, fontName='Helvetica-Bold')
+        subtitle_style = ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=14, alignment=TA_CENTER, spaceAfter=15, fontName='Helvetica-Bold')
+        normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=11, spaceAfter=8, leading=14)
+        bold_style = ParagraphStyle('Bold', parent=styles['Normal'], fontSize=11, fontName='Helvetica-Bold', spaceAfter=5)
+        center_style = ParagraphStyle('Center', parent=styles['Normal'], fontSize=11, alignment=TA_CENTER)
+
+        elements = []
+
+        # Gera uma nota promissória para cada parcela selecionada
+        for idx, installment_id in enumerate(selected_ids):
+            # Busca dados da parcela
+            installment = await conn.fetchrow("""
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    c.cpf_cnpj as customer_document,
+                    c.address as customer_address,
+                    c.city as customer_city,
+                    c.state as customer_state,
+                    c.zip_code as customer_zip
+                FROM accounts_receivable ar
+                LEFT JOIN customers c ON ar.customer_id = c.id
+                WHERE ar.id = $1
+            """, installment_id)
+
+            if not installment:
+                continue
+
+            # Adiciona page break entre notas (exceto primeira)
+            if idx > 0:
+                elements.append(PageBreak())
+
+            # Número da nota
+            note_number = f"NP-{installment['id'][:8].upper()}"
+
+            # Valor
+            valor = float(installment['amount'] or 0) - float(installment['paid_amount'] or 0)
+            valor_formatado = f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+            # Vencimento
+            vencimento = installment['due_date'].strftime('%d/%m/%Y') if installment['due_date'] else 'N/A'
+
+            # Cliente
+            customer_name = installment['customer_name'] or 'N/A'
+            customer_doc = installment['customer_document'] or 'N/A'
+            customer_address = ""
+            parts = []
+            if installment['customer_address']:
+                parts.append(installment['customer_address'])
+            if installment['customer_city']:
+                parts.append(installment['customer_city'])
+            if installment['customer_state']:
+                parts.append(installment['customer_state'])
+            customer_address = ", ".join(parts) if parts else "N/A"
+
+            # Parcela info
+            parcela_info = ""
+            if installment['installment_number'] and installment['total_installments']:
+                parcela_info = f" (Parcela {installment['installment_number']}/{installment['total_installments']})"
+
+            # === CABEÇALHO ===
+            elements.append(Paragraph("═" * 85, center_style))
+            elements.append(Spacer(1, 3*mm))
+            elements.append(Paragraph("NOTA PROMISSÓRIA", title_style))
+            elements.append(Paragraph(f"Nº {note_number}", subtitle_style))
+
+            # Vencimento e valor
+            header_data = [
+                [f"VENCIMENTO: {vencimento}", f"VALOR: {valor_formatado}"]
+            ]
+            header_table = Table(header_data, colWidths=[90*mm, 90*mm])
+            header_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 12),
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+                ('BOX', (0, 0), (-1, -1), 1, colors.black),
+                ('PADDING', (0, 0), (-1, -1), 8),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.Color(0.95, 0.95, 0.95)),
+            ]))
+            elements.append(header_table)
+            elements.append(Spacer(1, 8*mm))
+
+            # === TEXTO DA PROMISSÓRIA ===
+            promise_text = f"""
+            No vencimento indicado acima, pagarei por esta única via de <b>NOTA PROMISSÓRIA</b>{parcela_info},
+            a <b>{company_name}</b>{f', CNPJ: {company_cnpj}' if company_cnpj else ''},
+            ou à sua ordem, a quantia de <b>{valor_formatado}</b> ({self_extenso(valor)}),
+            em moeda corrente deste país, pagável na praça de {company_address or 'local de emissão'}.
+            """
+            elements.append(Paragraph(promise_text.strip(), normal_style))
+            elements.append(Spacer(1, 5*mm))
+
+            # Descrição
+            if installment['description']:
+                elements.append(Paragraph(f"<b>Referente a:</b> {installment['description']}", normal_style))
+                elements.append(Spacer(1, 5*mm))
+
+            # === DADOS DO EMITENTE ===
+            elements.append(Paragraph("<b>EMITENTE (DEVEDOR):</b>", bold_style))
+            emitter_data = [
+                ["Nome/Razão Social:", customer_name],
+                ["CPF/CNPJ:", customer_doc],
+                ["Endereço:", customer_address],
+            ]
+            emitter_table = Table(emitter_data, colWidths=[45*mm, 135*mm])
+            emitter_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('PADDING', (0, 0), (-1, -1), 4),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ]))
+            elements.append(emitter_table)
+            elements.append(Spacer(1, 8*mm))
+
+            # === LOCAL E DATA ===
+            today = datetime.utcnow()
+            meses = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+                     'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro']
+            data_extenso = f"{today.day} de {meses[today.month-1]} de {today.year}"
+
+            city = company['city'] if company and company.get('city') else 'Local'
+            elements.append(Paragraph(f"{city}, {data_extenso}", center_style))
+            elements.append(Spacer(1, 15*mm))
+
+            # === ASSINATURA ===
+            elements.append(Paragraph("_" * 60, center_style))
+            elements.append(Paragraph(f"<b>{customer_name}</b>", center_style))
+            elements.append(Paragraph(f"CPF/CNPJ: {customer_doc}", center_style))
+            elements.append(Spacer(1, 10*mm))
+
+            # === RODAPÉ LEGAL ===
+            elements.append(Paragraph("═" * 85, center_style))
+            elements.append(Paragraph(
+                "<i>Esta Nota Promissória está de acordo com a Lei Uniforme de Genebra (Decreto nº 57.663/66)</i>",
+                ParagraphStyle('Footer', fontSize=8, alignment=TA_CENTER, textColor=colors.grey)
+            ))
+
+        doc.build(elements)
+        buffer.seek(0)
+
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=nota_promissoria_{account_id[:8]}.pdf"
+            }
+        )
     finally:
         await conn.close()
