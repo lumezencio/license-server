@@ -2025,7 +2025,10 @@ async def get_company(
                 "phone": tenant.phone,
                 "email": tenant.email
             }
-        return row_to_dict(row)
+        data = row_to_dict(row)
+        if data.get('logo_path'):
+            data['logo_url'] = f"/uploads/{data['logo_path']}"
+        return data
     finally:
         await conn.close()
 
@@ -2803,7 +2806,10 @@ async def get_reports_company_info(
     try:
         row = await conn.fetchrow("SELECT * FROM companies LIMIT 1")
         if row:
-            return row_to_dict(row)
+            data = row_to_dict(row)
+            if data.get('logo_path'):
+                data['logo_url'] = f"/uploads/{data['logo_path']}"
+            return data
         # Fallback com dados do tenant
         return {
             "id": None,
