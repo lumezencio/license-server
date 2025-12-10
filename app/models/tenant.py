@@ -47,7 +47,7 @@ class Tenant(Base):
     phone = Column(String(20))
 
     # Configurações do banco de dados
-    database_name = Column(String(100), unique=True)  # Nome do banco: tenant_{document}
+    database_name = Column(String(100), unique=True)  # Nome do banco: cliente_{document}
     database_host = Column(String(255), default="localhost")
     database_port = Column(Integer, default=5432)
     database_user = Column(String(100))
@@ -102,7 +102,7 @@ class Tenant(Base):
     def generate_database_name(document: str) -> str:
         """Gera nome do banco de dados baseado no documento"""
         numbers = ''.join(filter(str.isdigit, document))
-        return f"tenant_{numbers}"
+        return f"cliente_{numbers}"
 
     @staticmethod
     def generate_database_user(document: str) -> str:

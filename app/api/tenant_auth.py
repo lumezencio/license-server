@@ -71,9 +71,7 @@ async def verify_tenant_user(
 ) -> Optional[dict]:
     """
     Verifica credenciais do usuario no banco do tenant.
-    Suporta dois esquemas de banco:
-    - Novo (tenants provisionados): password_hash, name, is_admin, must_change_password
-    - Legado (enterprise_db): hashed_password, full_name, role
+    Usa estrutura do enterprise_system: hashed_password, full_name, role, must_change_password
 
     Returns:
         dict com dados do usuario se autenticado, None caso contrario
@@ -89,89 +87,62 @@ async def verify_tenant_user(
         )
 
         try:
-            user = None
-            schema_type = None
-
-            # Primeiro tenta o esquema novo (tenants provisionados)
-            try:
-                user = await conn.fetchrow("""
-                    SELECT id, email, password_hash, name, is_active, is_admin, must_change_password
-                    FROM users
-                    WHERE email = $1
-                """, email.lower())
-                if user:
-                    schema_type = 'new'
-                    logger.info(f"Usuario encontrado no esquema novo: {email}")
-            except Exception as e:
-                logger.info(f"Esquema novo falhou (esperado para bancos legados): {e}")
-
-            # Se nao encontrou, tenta o esquema legado (enterprise_db)
-            if user is None:
-                try:
-                    user = await conn.fetchrow("""
-                        SELECT id, email, hashed_password as password_hash, full_name as name,
-                               is_active, role, COALESCE(false, false) as must_change_password
-                        FROM users
-                        WHERE email = $1 AND deleted_at IS NULL
-                    """, email.lower())
-                    if user:
-                        schema_type = 'legacy'
-                        logger.info(f"Usuario encontrado no esquema legado: {email}")
-                except Exception as e:
-                    logger.error(f"Esquema legado tambem falhou: {e}")
+            # Busca usuario na tabela users (estrutura enterprise_system)
+            user = await conn.fetchrow("""
+                SELECT id, email, hashed_password, full_name, is_active, role,
+                       COALESCE(must_change_password, false) as must_change_password
+                FROM users
+                WHERE email = $1 AND (deleted_at IS NULL OR deleted_at > CURRENT_TIMESTAMP)
+            """, email.lower())
 
             if not user:
+                logger.info(f"Usuario nao encontrado: {email}")
                 return None
 
             if not user['is_active']:
+                logger.info(f"Usuario inativo: {email}")
                 return None
 
-            # Verifica senha baseado no tipo de esquema
+            # Verifica senha - tenta SHA256 primeiro (novos tenants), depois bcrypt (legado)
             password_valid = False
-            if schema_type == 'new':
-                # Esquema novo usa SHA256
-                password_hash = hashlib.sha256(password.encode()).hexdigest()
-                password_valid = user['password_hash'] == password_hash
+            password_hash_sha256 = hashlib.sha256(password.encode()).hexdigest()
+
+            if user['hashed_password'] == password_hash_sha256:
+                password_valid = True
+                logger.info(f"Senha validada via SHA256 para: {email}")
             else:
-                # Esquema legado usa bcrypt
+                # Tenta bcrypt para usuarios legados
                 import bcrypt
                 try:
                     password_valid = bcrypt.checkpw(
                         password.encode(),
-                        user['password_hash'].encode()
+                        user['hashed_password'].encode()
                     )
+                    if password_valid:
+                        logger.info(f"Senha validada via bcrypt para: {email}")
                 except Exception:
                     password_valid = False
 
             if not password_valid:
+                logger.info(f"Senha invalida para: {email}")
                 return None
 
-            # Atualiza last_login
+            # Atualiza last_login_at
             try:
-                if schema_type == 'new':
-                    await conn.execute("""
-                        UPDATE users SET last_login = $1 WHERE id = $2
-                    """, datetime.utcnow(), user['id'])
-                else:
-                    await conn.execute("""
-                        UPDATE users SET last_login_at = $1 WHERE id = $2
-                    """, datetime.utcnow(), user['id'])
+                await conn.execute("""
+                    UPDATE users SET last_login_at = $1, updated_at = $1 WHERE id = $2
+                """, datetime.utcnow(), user['id'])
             except Exception:
                 pass  # Ignora erro ao atualizar last_login
 
-            # Determina is_admin baseado no esquema
-            is_admin = False
-            if schema_type == 'new':
-                is_admin = user['is_admin']
-            else:
-                # No esquema legado, verifica pelo role
-                role = user.get('role', '')
-                is_admin = role in ['admin', 'superadmin']
+            # Determina is_admin pelo role
+            role = user.get('role', '') or ''
+            is_admin = role in ['admin', 'superadmin']
 
             return {
                 "id": str(user['id']),
                 "email": user['email'],
-                "name": user['name'],
+                "name": user['full_name'] or '',
                 "is_admin": is_admin,
                 "must_change_password": user['must_change_password'] or False
             }
@@ -504,7 +475,7 @@ async def change_tenant_password(
             new_hash = hashlib.sha256(new_password.encode()).hexdigest()
             await conn.execute("""
                 UPDATE users
-                SET password_hash = $1, must_change_password = FALSE, updated_at = $2
+                SET hashed_password = $1, must_change_password = FALSE, updated_at = $2
                 WHERE email = $3
             """, new_hash, datetime.utcnow(), email.lower())
 
