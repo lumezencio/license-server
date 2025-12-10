@@ -2118,11 +2118,17 @@ async def upload_logo(
         
         # Lê conteúdo do arquivo
         contents = await file.read()
-        
-        # Salva no container (diretório /app/uploads/logos)
-        upload_dir = "/app/uploads/logos"
+
+        # Determina diretório de uploads (produção vs local)
+        if os.path.exists("/app/uploads"):
+            upload_base = "/app/uploads"
+        else:
+            # Desenvolvimento local
+            upload_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
+
+        upload_dir = os.path.join(upload_base, "logos")
         os.makedirs(upload_dir, exist_ok=True)
-        
+
         filepath = os.path.join(upload_dir, filename)
         with open(filepath, 'wb') as f:
             f.write(contents)
@@ -2151,7 +2157,13 @@ async def delete_logo(
     try:
         row = await conn.fetchrow("SELECT logo_path FROM companies LIMIT 1")
         if row and row['logo_path']:
-            filepath = f"/app/uploads/{row['logo_path']}"
+            # Determina diretório de uploads (produção vs local)
+            if os.path.exists("/app/uploads"):
+                upload_base = "/app/uploads"
+            else:
+                upload_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
+
+            filepath = os.path.join(upload_base, row['logo_path'])
             if os.path.exists(filepath):
                 os.remove(filepath)
 

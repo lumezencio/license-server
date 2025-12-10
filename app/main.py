@@ -71,8 +71,16 @@ app.include_router(tenant_auth_router, prefix="/api")
 app.include_router(tenant_gateway_router, prefix="/api")
 
 # Static files para uploads
-uploads_dir = "/app/uploads"
+# Usa diretório relativo para desenvolvimento local e /app/uploads para produção
+if os.path.exists("/app/uploads"):
+    uploads_dir = "/app/uploads"
+else:
+    # Desenvolvimento local - cria pasta uploads na raiz do projeto
+    uploads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
+
 os.makedirs(uploads_dir, exist_ok=True)
+os.makedirs(os.path.join(uploads_dir, "logos"), exist_ok=True)
+print(f"Uploads directory: {uploads_dir}")
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
