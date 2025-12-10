@@ -2149,6 +2149,674 @@ async def get_reports_customers_list(
         await conn.close()
 
 
+@router.get("/reports/suppliers/list")
+async def get_reports_suppliers_list(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista fornecedores para relatorios"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        rows = await conn.fetch("""
+            SELECT id,
+                COALESCE(company_name, trade_name, name) as name,
+                cpf_cnpj as document, email, phone
+            FROM suppliers
+            WHERE deleted_at IS NULL
+            ORDER BY COALESCE(company_name, trade_name, name)
+            LIMIT 1000
+        """)
+        return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/sellers/list")
+async def get_reports_sellers_list(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista vendedores para relatorios"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        rows = await conn.fetch("""
+            SELECT id, full_name as name, email
+            FROM users
+            WHERE deleted_at IS NULL AND is_active = true
+            ORDER BY full_name
+            LIMIT 500
+        """)
+        return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - REPORTS ACCOUNTS RECEIVABLE ===
+
+@router.get("/reports/accounts-receivable/summary")
+async def get_reports_accounts_receivable_summary(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    status: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio resumido de contas a receber"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Filtro para excluir contas PAI de parcelamentos
+        filter_clause = """
+            AND is_active = true
+            AND (
+                parent_id IS NOT NULL
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+            )
+        """
+
+        where_parts = ["1=1"]
+        params = []
+        param_idx = 1
+
+        if start_date:
+            where_parts.append(f"due_date >= ${param_idx}")
+            params.append(start_date)
+            param_idx += 1
+
+        if end_date:
+            where_parts.append(f"due_date <= ${param_idx}")
+            params.append(end_date)
+            param_idx += 1
+
+        if customer_id:
+            where_parts.append(f"customer_id::text = ${param_idx}")
+            params.append(customer_id)
+            param_idx += 1
+
+        if status:
+            where_parts.append(f"status::text = ${param_idx}")
+            params.append(status)
+            param_idx += 1
+
+        where_clause = " AND ".join(where_parts) + filter_clause
+
+        # Lista de contas
+        rows = await conn.fetch(f"""
+            SELECT ar.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+            FROM accounts_receivable ar
+            LEFT JOIN customers c ON ar.customer_id = c.id
+            WHERE {where_clause}
+            ORDER BY ar.due_date
+        """, *params)
+
+        # Totais
+        total_value = sum(float(r.get('amount', 0) or 0) for r in rows)
+        total_paid = sum(float(r.get('paid_amount', 0) or 0) for r in rows)
+        total_balance = total_value - total_paid
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "total_value": total_value,
+                "total_paid": total_paid,
+                "total_balance": total_balance,
+                "count": len(rows)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/accounts-receivable/detailed")
+async def get_reports_accounts_receivable_detailed(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    status: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio detalhado de contas a receber"""
+    # Usa a mesma logica do summary, mas pode ser expandido
+    return await get_reports_accounts_receivable_summary(
+        start_date=start_date,
+        end_date=end_date,
+        customer_id=customer_id,
+        status=status,
+        tenant_data=tenant_data
+    )
+
+
+# === ENDPOINTS - REPORTS ACCOUNTS PAYABLE ===
+
+@router.get("/reports/accounts-payable/summary")
+async def get_reports_accounts_payable_summary(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    supplier_id: Optional[str] = None,
+    status: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio resumido de contas a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        where_parts = ["1=1", "is_active = true"]
+        params = []
+        param_idx = 1
+
+        if start_date:
+            where_parts.append(f"due_date >= ${param_idx}")
+            params.append(start_date)
+            param_idx += 1
+
+        if end_date:
+            where_parts.append(f"due_date <= ${param_idx}")
+            params.append(end_date)
+            param_idx += 1
+
+        if supplier_id:
+            where_parts.append(f"supplier_id::text = ${param_idx}")
+            params.append(supplier_id)
+            param_idx += 1
+
+        if status:
+            where_parts.append(f"status::text = ${param_idx}")
+            params.append(status)
+            param_idx += 1
+
+        where_clause = " AND ".join(where_parts)
+
+        # Lista de contas - schema legado usa amount_paid em vez de paid_amount
+        rows = await conn.fetch(f"""
+            SELECT ap.*,
+                COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+            FROM accounts_payable ap
+            LEFT JOIN suppliers s ON ap.supplier_id = s.id
+            WHERE {where_clause}
+            ORDER BY ap.due_date
+        """, *params)
+
+        # Totais - tenta ambos os nomes de coluna
+        total_value = sum(float(r.get('amount', 0) or 0) for r in rows)
+        total_paid = sum(float(r.get('amount_paid', 0) or r.get('paid_amount', 0) or 0) for r in rows)
+        total_balance = total_value - total_paid
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "total_value": total_value,
+                "total_paid": total_paid,
+                "total_balance": total_balance,
+                "count": len(rows)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/accounts-payable/detailed")
+async def get_reports_accounts_payable_detailed(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    supplier_id: Optional[str] = None,
+    status: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio detalhado de contas a pagar"""
+    return await get_reports_accounts_payable_summary(
+        start_date=start_date,
+        end_date=end_date,
+        supplier_id=supplier_id,
+        status=status,
+        tenant_data=tenant_data
+    )
+
+
+# === ENDPOINTS - REPORTS SALES ===
+
+@router.get("/reports/sales")
+async def get_reports_sales(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    seller_id: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio de vendas"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        where_parts = ["1=1"]
+        params = []
+        param_idx = 1
+
+        if start_date:
+            where_parts.append(f"s.sale_date >= ${param_idx}")
+            params.append(start_date)
+            param_idx += 1
+
+        if end_date:
+            where_parts.append(f"s.sale_date <= ${param_idx}")
+            params.append(end_date)
+            param_idx += 1
+
+        if customer_id:
+            where_parts.append(f"s.customer_id::text = ${param_idx}")
+            params.append(customer_id)
+            param_idx += 1
+
+        if seller_id:
+            where_parts.append(f"s.seller_id::text = ${param_idx}")
+            params.append(seller_id)
+            param_idx += 1
+
+        where_clause = " AND ".join(where_parts)
+
+        rows = await conn.fetch(f"""
+            SELECT s.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                u.full_name as seller_name
+            FROM sales s
+            LEFT JOIN customers c ON s.customer_id = c.id
+            LEFT JOIN users u ON s.seller_id = u.id
+            WHERE {where_clause}
+            ORDER BY s.sale_date DESC
+        """, *params)
+
+        total_amount = sum(float(r.get('total_amount', 0) or r.get('total', 0) or 0) for r in rows)
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "total_amount": total_amount,
+                "count": len(rows)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - REPORTS PURCHASES ===
+
+@router.get("/reports/purchases")
+async def get_reports_purchases(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    supplier_id: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio de compras"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        where_parts = ["1=1"]
+        params = []
+        param_idx = 1
+
+        if start_date:
+            where_parts.append(f"p.purchase_date >= ${param_idx}")
+            params.append(start_date)
+            param_idx += 1
+
+        if end_date:
+            where_parts.append(f"p.purchase_date <= ${param_idx}")
+            params.append(end_date)
+            param_idx += 1
+
+        if supplier_id:
+            where_parts.append(f"p.supplier_id::text = ${param_idx}")
+            params.append(supplier_id)
+            param_idx += 1
+
+        where_clause = " AND ".join(where_parts)
+
+        rows = await conn.fetch(f"""
+            SELECT p.*,
+                COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+            FROM purchases p
+            LEFT JOIN suppliers s ON p.supplier_id = s.id
+            WHERE {where_clause}
+            ORDER BY p.purchase_date DESC
+        """, *params)
+
+        total_amount = sum(float(r.get('total_amount', 0) or r.get('total', 0) or 0) for r in rows)
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "total_amount": total_amount,
+                "count": len(rows)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - OTHER REPORTS ===
+
+@router.get("/reports/cash-flow")
+async def get_reports_cash_flow(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio de fluxo de caixa"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        date_filter_ar = ""
+        date_filter_ap = ""
+        params_ar = []
+        params_ap = []
+
+        if start_date and end_date:
+            date_filter_ar = "AND due_date BETWEEN $1 AND $2"
+            date_filter_ap = "AND due_date BETWEEN $1 AND $2"
+            params_ar = [start_date, end_date]
+            params_ap = [start_date, end_date]
+
+        # Entradas (recebimentos)
+        entradas = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
+            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {date_filter_ar}
+        """, *params_ar) or 0
+
+        # Saidas (pagamentos)
+        saidas = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {date_filter_ap}
+        """, *params_ap) or 0
+
+        # Previsao de entradas
+        previsao_entradas = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {date_filter_ar}
+        """, *params_ar) or 0
+
+        # Previsao de saidas
+        previsao_saidas = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {date_filter_ap}
+        """, *params_ap) or 0
+
+        return {
+            "data": {
+                "entradas": float(entradas),
+                "saidas": float(saidas),
+                "saldo": float(entradas) - float(saidas),
+                "previsao_entradas": float(previsao_entradas),
+                "previsao_saidas": float(previsao_saidas),
+                "previsao_saldo": float(previsao_entradas) - float(previsao_saidas)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/dre")
+async def get_reports_dre(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Demonstrativo de Resultados do Exercicio"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        date_filter = ""
+        params = []
+        if start_date and end_date:
+            date_filter = "AND sale_date BETWEEN $1 AND $2"
+            params = [start_date, end_date]
+
+        # Receitas (vendas)
+        receita_bruta = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(total_amount), 0) FROM sales WHERE 1=1 {date_filter}
+        """, *params) or 0
+
+        # Custos (compras)
+        custos = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(total_amount), 0) FROM purchases
+            WHERE 1=1 {date_filter.replace('sale_date', 'purchase_date')}
+        """, *params) or 0
+
+        lucro_bruto = float(receita_bruta) - float(custos)
+
+        return {
+            "data": {
+                "receita_bruta": float(receita_bruta),
+                "deducoes": 0,
+                "receita_liquida": float(receita_bruta),
+                "custos": float(custos),
+                "lucro_bruto": lucro_bruto,
+                "despesas_operacionais": 0,
+                "lucro_operacional": lucro_bruto,
+                "resultado_financeiro": 0,
+                "lucro_liquido": lucro_bruto
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/inventory")
+async def get_reports_inventory(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio de inventario/estoque"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        rows = await conn.fetch("""
+            SELECT id, code, name, description, unit, cost_price, sale_price,
+                stock_quantity, min_stock, category, is_active
+            FROM products
+            ORDER BY name
+        """)
+
+        total_items = len(rows)
+        total_value = sum(float(r.get('cost_price', 0) or 0) * float(r.get('stock_quantity', 0) or 0) for r in rows)
+        low_stock = sum(1 for r in rows if (r.get('stock_quantity', 0) or 0) <= (r.get('min_stock', 0) or 0) and (r.get('min_stock', 0) or 0) > 0)
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "total_items": total_items,
+                "total_value": total_value,
+                "low_stock_count": low_stock
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/default-analysis")
+async def get_reports_default_analysis(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Analise de inadimplencia"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        where_parts = ["status::text IN ('pending', 'PENDING')", "due_date < CURRENT_DATE", "is_active = true"]
+        params = []
+        param_idx = 1
+
+        if customer_id:
+            where_parts.append(f"customer_id::text = ${param_idx}")
+            params.append(customer_id)
+            param_idx += 1
+
+        where_clause = " AND ".join(where_parts)
+
+        rows = await conn.fetch(f"""
+            SELECT ar.*,
+                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                CURRENT_DATE - ar.due_date as days_overdue
+            FROM accounts_receivable ar
+            LEFT JOIN customers c ON ar.customer_id = c.id
+            WHERE {where_clause}
+            ORDER BY ar.due_date
+        """, *params)
+
+        total_overdue = sum(float(r.get('amount', 0) or 0) - float(r.get('paid_amount', 0) or 0) for r in rows)
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "total_overdue": total_overdue,
+                "count": len(rows)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/forecast")
+async def get_reports_forecast(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Previsao financeira"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        date_filter = ""
+        params = []
+        if start_date and end_date:
+            date_filter = "AND due_date BETWEEN $1 AND $2"
+            params = [start_date, end_date]
+
+        # A receber previsto
+        a_receber = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true {date_filter}
+        """, *params) or 0
+
+        # A pagar previsto
+        a_pagar = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true {date_filter}
+        """, *params) or 0
+
+        return {
+            "data": {
+                "previsao_entradas": float(a_receber),
+                "previsao_saidas": float(a_pagar),
+                "saldo_previsto": float(a_receber) - float(a_pagar)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/management")
+async def get_reports_management(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio gerencial"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Clientes
+        total_customers = await conn.fetchval("SELECT COUNT(*) FROM customers WHERE deleted_at IS NULL") or 0
+
+        # Vendas do periodo
+        date_filter = ""
+        params = []
+        if start_date and end_date:
+            date_filter = "AND sale_date BETWEEN $1 AND $2"
+            params = [start_date, end_date]
+
+        total_sales = await conn.fetchval(f"SELECT COALESCE(SUM(total_amount), 0) FROM sales WHERE 1=1 {date_filter}", *params) or 0
+        count_sales = await conn.fetchval(f"SELECT COUNT(*) FROM sales WHERE 1=1 {date_filter}", *params) or 0
+
+        # A receber
+        total_receivable = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true
+        """) or 0
+
+        # A pagar
+        total_payable = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true
+        """) or 0
+
+        return {
+            "data": {
+                "total_customers": total_customers,
+                "total_sales": float(total_sales),
+                "count_sales": count_sales,
+                "total_receivable": float(total_receivable),
+                "total_payable": float(total_payable),
+                "balance": float(total_receivable) - float(total_payable)
+            }
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/reports/registry")
+async def get_reports_registry(
+    type: Optional[str] = "customers",
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Relatorio de cadastros"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        if type == "suppliers":
+            rows = await conn.fetch("""
+                SELECT id, COALESCE(company_name, trade_name, name) as name,
+                    cpf_cnpj as document, email, phone, address, city, state
+                FROM suppliers WHERE deleted_at IS NULL
+                ORDER BY COALESCE(company_name, trade_name, name)
+            """)
+        elif type == "products":
+            rows = await conn.fetch("""
+                SELECT id, code, name, description, unit, cost_price, sale_price, stock_quantity
+                FROM products
+                ORDER BY name
+            """)
+        else:  # customers
+            rows = await conn.fetch("""
+                SELECT id, COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                    cpf_cnpj as document, email, phone, address, city, state
+                FROM customers WHERE deleted_at IS NULL
+                ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)
+            """)
+
+        return {
+            "data": [row_to_dict(row) for row in rows],
+            "summary": {
+                "count": len(rows)
+            }
+        }
+    finally:
+        await conn.close()
+
+
 # === ENDPOINTS - PRODUCTS STATS ===
 
 @router.get("/products/stats/dashboard")
