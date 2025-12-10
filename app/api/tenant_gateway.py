@@ -1445,6 +1445,215 @@ async def list_user_permissions(
     return []
 
 
+
+
+@router.get("/users/{user_id}")
+async def get_user(
+    user_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Busca usuario por ID"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            SELECT id, email,
+                COALESCE(full_name, username, email) as name,
+                full_name,
+                username,
+                role,
+                (role = 'admin' OR role = 'superadmin') as is_admin,
+                is_active,
+                created_at
+            FROM users
+            WHERE id::text = $1 AND deleted_at IS NULL
+        """, user_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.post("/users")
+async def create_user(
+    user_data: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria novo usuario"""
+    import uuid
+    import hashlib
+    tenant, current_user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Verifica se email ja existe
+        existing = await conn.fetchval(
+            "SELECT 1 FROM users WHERE email = $1 AND deleted_at IS NULL",
+            user_data.get("email", "").lower()
+        )
+        if existing:
+            raise HTTPException(status_code=400, detail="Email ja cadastrado")
+
+        # Gera ID e hash da senha
+        user_id = str(uuid.uuid4())
+        password = user_data.get("password", "123456")
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+
+        # Insere usuario
+        row = await conn.fetchrow("""
+            INSERT INTO users (
+                id, email, hashed_password, full_name, role,
+                is_active, is_verified, must_change_password,
+                created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, TRUE, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id, email, full_name, role, is_active, created_at
+        """,
+            user_id,
+            user_data.get("email", "").lower(),
+            password_hash,
+            user_data.get("full_name") or user_data.get("name", ""),
+            user_data.get("role", "user"),
+            user_data.get("is_active", True)
+        )
+
+        result = row_to_dict(row)
+        result["name"] = result.get("full_name", "")
+        result["is_admin"] = result.get("role") in ["admin", "superadmin"]
+        return {"success": True, "data": result, "message": "Usuario criado com sucesso"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao criar usuario: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
+@router.put("/users/{user_id}")
+async def update_user(
+    user_id: str,
+    user_data: dict,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza usuario"""
+    import hashlib
+    tenant, current_user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Verifica se usuario existe
+        existing = await conn.fetchrow(
+            "SELECT * FROM users WHERE id::text = $1 AND deleted_at IS NULL",
+            user_id
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+
+        # Verifica email duplicado (se alterado)
+        new_email = user_data.get("email", "").lower()
+        if new_email and new_email != existing["email"]:
+            email_exists = await conn.fetchval(
+                "SELECT 1 FROM users WHERE email = $1 AND id::text != $2 AND deleted_at IS NULL",
+                new_email, user_id
+            )
+            if email_exists:
+                raise HTTPException(status_code=400, detail="Email ja cadastrado")
+
+        # Prepara campos para update
+        update_fields = []
+        values = [user_id]
+        param_index = 2
+
+        if "email" in user_data:
+            update_fields.append(f"email = ${param_index}")
+            values.append(user_data["email"].lower())
+            param_index += 1
+
+        if "full_name" in user_data or "name" in user_data:
+            update_fields.append(f"full_name = ${param_index}")
+            values.append(user_data.get("full_name") or user_data.get("name", ""))
+            param_index += 1
+
+        if "role" in user_data:
+            update_fields.append(f"role = ${param_index}")
+            values.append(user_data["role"])
+            param_index += 1
+
+        if "is_active" in user_data:
+            update_fields.append(f"is_active = ${param_index}")
+            values.append(user_data["is_active"])
+            param_index += 1
+
+        if "password" in user_data and user_data["password"]:
+            password_hash = hashlib.sha256(user_data["password"].encode()).hexdigest()
+            update_fields.append(f"hashed_password = ${param_index}")
+            values.append(password_hash)
+            param_index += 1
+
+        update_fields.append(f"updated_at = ${param_index}")
+        values.append(datetime.utcnow())
+
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+
+        query = f"""
+            UPDATE users SET {', '.join(update_fields)}
+            WHERE id::text = $1 AND deleted_at IS NULL
+            RETURNING id, email, full_name, role, is_active, created_at
+        """
+
+        row = await conn.fetchrow(query, *values)
+        if not row:
+            raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+
+        result = row_to_dict(row)
+        result["name"] = result.get("full_name", "")
+        result["is_admin"] = result.get("role") in ["admin", "superadmin"]
+        return {"success": True, "data": result, "message": "Usuario atualizado com sucesso"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar usuario: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Remove usuario (soft delete)"""
+    tenant, current_user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Nao permite deletar o proprio usuario
+        if current_user["user_id"] == user_id:
+            raise HTTPException(status_code=400, detail="Nao e possivel remover seu proprio usuario")
+
+        # Soft delete
+        result = await conn.execute("""
+            UPDATE users SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id::text = $1 AND deleted_at IS NULL
+        """, user_id)
+
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+
+        return {"success": True, "message": "Usuario removido com sucesso"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao remover usuario: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
 # === ENDPOINTS - DASHBOARD OVERVIEW ===
 
 @router.get("/dashboard/overview")
