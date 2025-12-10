@@ -1501,13 +1501,14 @@ async def create_user(
         password = user_data.get("password", "123456")
         password_hash = hashlib.sha256(password.encode()).hexdigest()
 
-        # Insere usuario
+        # Insere usuario - inclui TODAS as colunas NOT NULL do schema legado
         row = await conn.fetchrow("""
             INSERT INTO users (
                 id, email, hashed_password, full_name, role,
                 is_active, is_verified, must_change_password,
+                two_factor_enabled, failed_login_attempts,
                 created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, TRUE, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ) VALUES ($1, $2, $3, $4, $5, $6, TRUE, TRUE, FALSE, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id, email, full_name, role, is_active, created_at
         """,
             user_id,
