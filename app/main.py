@@ -5,6 +5,8 @@ Sistema de licenciamento profissional com RSA
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
 
 from app.core import settings
 from app.database import init_db
@@ -67,6 +69,11 @@ app.include_router(register_router, prefix="/api")
 app.include_router(provisioning_router, prefix="/api")
 app.include_router(tenant_auth_router, prefix="/api")
 app.include_router(tenant_gateway_router, prefix="/api")
+
+# Static files para uploads
+uploads_dir = "/app/uploads"
+if os.path.exists(uploads_dir):
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
 @app.get("/")

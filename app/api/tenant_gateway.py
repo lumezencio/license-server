@@ -2135,6 +2135,29 @@ async def upload_logo(
     finally:
         await conn.close()
 
+
+
+@router.delete("/logo")
+async def delete_logo(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Remove logo da empresa"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("SELECT logo_path FROM companies LIMIT 1")
+        if row and row['logo_path']:
+            filepath = f"/app/uploads/{row['logo_path']}"
+            if os.path.exists(filepath):
+                os.remove(filepath)
+
+        await conn.execute("UPDATE companies SET logo_path = NULL, updated_at = NOW()")
+        return {"success": True, "message": "Logo removido com sucesso"}
+    finally:
+        await conn.close()
+
+
 # === ENDPOINTS - LEGAL CALCULATIONS ===
 
 @router.get("/legal-calculations")
