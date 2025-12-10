@@ -1182,8 +1182,14 @@ async def pay_account_receivable(
         total_amount = float(row["amount"])
         new_paid = current_paid + payment_amount
 
-        # Determina novo status
-        new_status = "paid" if new_paid >= total_amount else "partial"
+        # Determina novo status - usa MAIÚSCULO para o ENUM
+        new_status = "PAID" if new_paid >= total_amount else "PARTIAL"
+
+        # Converte payment_date para date se for string
+        payment_date = payment.get("payment_date")
+        if isinstance(payment_date, str):
+            from datetime import datetime as dt
+            payment_date = dt.fromisoformat(payment_date.replace('Z', '+00:00')).date() if 'T' in payment_date else dt.strptime(payment_date, '%Y-%m-%d').date()
 
         # Atualiza conta
         updated = await conn.fetchrow("""
@@ -1191,7 +1197,7 @@ async def pay_account_receivable(
                 paid_amount = $2, status = $3, payment_date = $4, updated_at = $5
             WHERE id = $1
             RETURNING *
-        """, account_id, new_paid, new_status, payment.get("payment_date"), datetime.utcnow())
+        """, account_id, new_paid, new_status, payment_date, datetime.utcnow())
 
         return row_to_dict(updated)
     finally:
