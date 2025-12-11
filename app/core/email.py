@@ -1,9 +1,11 @@
 """
 License Server - Email Service
 Serviço de envio de emails para notificações e credenciais
+Suporta SMTP e Resend API (para quando SMTP estiver bloqueado)
 """
 import smtplib
 import ssl
+import httpx
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -15,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Serviço de envio de emails via SMTP"""
+    """Serviço de envio de emails via SMTP ou Resend API"""
 
     def __init__(self):
         self.host = settings.SMTP_HOST
@@ -26,34 +28,59 @@ class EmailService:
         self.from_name = settings.SMTP_FROM_NAME
         self.use_tls = settings.SMTP_TLS
         self.use_ssl = settings.SMTP_SSL
+        self.resend_api_key = settings.RESEND_API_KEY
+        self.email_provider = settings.EMAIL_PROVIDER
 
     def is_configured(self) -> bool:
         """Verifica se o serviço de email está configurado"""
+        if self.email_provider == "resend":
+            return bool(self.resend_api_key)
         return bool(self.user and self.password)
 
-    def send_email(
+    def _send_via_resend(
         self,
         to_email: str,
         subject: str,
         html_content: str,
         text_content: Optional[str] = None
     ) -> bool:
-        """
-        Envia um email
+        """Envia email via Resend API (HTTP)"""
+        try:
+            response = httpx.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {self.resend_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": f"{self.from_name} <{self.from_email}>",
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_content,
+                    "text": text_content or ""
+                },
+                timeout=30.0
+            )
 
-        Args:
-            to_email: Email do destinatário
-            subject: Assunto do email
-            html_content: Conteúdo HTML do email
-            text_content: Conteúdo texto puro (opcional)
+            if response.status_code == 200:
+                logger.info(f"Email sent successfully via Resend to {to_email}")
+                return True
+            else:
+                logger.error(f"Resend API error: {response.status_code} - {response.text}")
+                return False
 
-        Returns:
-            True se enviado com sucesso, False caso contrário
-        """
-        if not self.is_configured():
-            logger.warning("Email service not configured. Skipping email send.")
+        except Exception as e:
+            logger.error(f"Failed to send email via Resend to {to_email}: {str(e)}")
             return False
 
+    def _send_via_smtp(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None
+    ) -> bool:
+        """Envia email via SMTP"""
         try:
             # Cria mensagem
             message = MIMEMultipart("alternative")
@@ -83,12 +110,41 @@ class EmailService:
                     server.login(self.user, self.password)
                     server.sendmail(self.from_email, to_email, message.as_string())
 
-            logger.info(f"Email sent successfully to {to_email}")
+            logger.info(f"Email sent successfully via SMTP to {to_email}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            logger.error(f"Failed to send email via SMTP to {to_email}: {str(e)}")
             return False
+
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None
+    ) -> bool:
+        """
+        Envia um email usando o provedor configurado
+
+        Args:
+            to_email: Email do destinatário
+            subject: Assunto do email
+            html_content: Conteúdo HTML do email
+            text_content: Conteúdo texto puro (opcional)
+
+        Returns:
+            True se enviado com sucesso, False caso contrário
+        """
+        if not self.is_configured():
+            logger.warning("Email service not configured. Skipping email send.")
+            return False
+
+        # Usa Resend se configurado ou se SMTP falhar
+        if self.email_provider == "resend" or self.resend_api_key:
+            return self._send_via_resend(to_email, subject, html_content, text_content)
+
+        return self._send_via_smtp(to_email, subject, html_content, text_content)
 
     def send_welcome_email(
         self,

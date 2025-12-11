@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     SMTP_TLS: bool = True
     SMTP_SSL: bool = False
 
+    # Resend API (alternativa quando SMTP estiver bloqueado)
+    RESEND_API_KEY: Optional[str] = None
+    EMAIL_PROVIDER: str = "smtp"  # "smtp" ou "resend"
+
     # App URLs
     APP_URL: str = "https://www.tech-emp.com"
     LOGIN_URL: str = "https://www.tech-emp.com/login"
