@@ -3516,10 +3516,10 @@ async def get_reports_registry(
     try:
         if type == "suppliers":
             rows = await conn.fetch("""
-                SELECT id, COALESCE(company_name, trade_name, name) as name,
+                SELECT id, COALESCE(company_name, trade_name) as name,
                     cpf_cnpj as document, email, phone, address, city, state
-                FROM suppliers WHERE deleted_at IS NULL
-                ORDER BY COALESCE(company_name, trade_name, name)
+                FROM suppliers WHERE is_active = true OR is_active IS NULL
+                ORDER BY COALESCE(company_name, trade_name)
             """)
         elif type == "products":
             rows = await conn.fetch("""
@@ -3531,7 +3531,7 @@ async def get_reports_registry(
             rows = await conn.fetch("""
                 SELECT id, COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
                     cpf_cnpj as document, email, phone, address, city, state
-                FROM customers WHERE deleted_at IS NULL
+                FROM customers WHERE is_active = true OR is_active IS NULL
                 ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)
             """)
 
