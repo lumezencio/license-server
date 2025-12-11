@@ -945,6 +945,7 @@ async def list_accounts_receivable(
     limit: int = 100,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    customer_id: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Lista contas a receber do tenant"""
@@ -954,6 +955,25 @@ async def list_accounts_receivable(
     try:
         # Conta total para paginacao
         total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
+
+        # FILTRO POR CUSTOMER_ID - usado na tela de Vendas para mostrar contas do cliente selecionado
+        if customer_id:
+            print(f"[AR] Filtrando por customer_id: {customer_id}", flush=True)
+            rows = await conn.fetch("""
+                SELECT ar.*,
+                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    (SELECT MIN(child.due_date) FROM accounts_receivable child
+                     WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
+                FROM accounts_receivable ar
+                LEFT JOIN customers c ON ar.customer_id = c.id
+                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                  AND ar.customer_id = $1
+                ORDER BY ar.due_date DESC
+                LIMIT $2 OFFSET $3
+            """, customer_id, limit, skip)
+            print(f"[AR] Encontradas {len(rows)} contas para customer_id {customer_id}", flush=True)
+            items = [row_to_dict(row) for row in rows]
+            return {"items": items, "total": len(items)}
 
         # Schema legado: customers usa first_name/last_name em vez de name
         # IMPORTANTE: Retorna apenas contas PAI (installment_number = 0)
