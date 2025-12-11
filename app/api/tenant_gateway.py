@@ -661,6 +661,41 @@ async def get_product(
         await conn.close()
 
 
+def to_decimal(val):
+    """Converte valor para decimal ou None se vazio"""
+    if val is None or val == '' or val == 'null':
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+def to_int(val):
+    """Converte valor para int ou None se vazio"""
+    if val is None or val == '' or val == 'null':
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return None
+
+def to_bool(val):
+    """Converte valor para bool"""
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ('true', '1', 'yes', 'sim')
+    return bool(val)
+
+def to_str(val):
+    """Converte valor para string ou None se vazio"""
+    if val is None or val == '' or val == 'null':
+        return None
+    return str(val)
+
+
 @router.post("/products")
 async def create_product(
     product: ProductModel,
@@ -723,25 +758,25 @@ async def create_product(
             RETURNING *
         """,
             product_id, now, now,
-            product.name, product.code, product.barcode_ean, product.barcode_ean128, product.sku, product.item_type,
-            product.description, product.short_description, product.technical_specification, product.application, product.composition,
-            product.category_id, product.subcategory_id, product.brand, product.model,
-            product.unit_of_measure, product.unit_weight, product.gross_weight, product.net_weight, product.length, product.width, product.height, product.volume,
-            product.packaging_unit, product.packaging_quantity, product.pallet_quantity,
-            product.ncm, product.cest, product.cfop_venda_estadual, product.cfop_venda_interestadual,
-            product.origem_mercadoria, product.cst_icms, product.aliquota_icms, product.reducao_bc_icms,
-            product.icms_st_aliquota, product.icms_st_mva, product.cst_ipi, product.aliquota_ipi, product.codigo_enquadramento_ipi,
-            product.cst_pis, product.aliquota_pis, product.cst_cofins, product.aliquota_cofins,
-            product.cost_price, product.additional_costs, product.final_cost, product.markup_percentage,
-            product.sale_price, product.suggested_price, product.minimum_price, product.maximum_discount,
-            product.stock_control, product.current_stock, product.reserved_stock, product.available_stock,
-            product.minimum_stock, product.maximum_stock, product.reorder_point, product.economic_lot, product.abc_classification,
-            product.main_supplier_id, product.supplier_code, product.supplier_description, product.lead_time_days,
-            product.minimum_order_qty, product.purchase_unit, product.conversion_factor,
-            product.status, product.sales_status, product.purchase_status, product.quality_control, product.serialized_control,
-            product.is_kit, product.is_manufactured, product.is_imported, product.is_controlled,
-            product.observations, product.internal_notes, product.sales_notes, product.purchase_notes, product.tags,
-            product.main_image, product.additional_images, product.technical_drawings, product.certificates, product.manuals
+            to_str(product.name), to_str(product.code), to_str(product.barcode_ean), to_str(product.barcode_ean128), to_str(product.sku), to_str(product.item_type) or "PRODUCT",
+            to_str(product.description) or "", to_str(product.short_description) or "", to_str(product.technical_specification), to_str(product.application), to_str(product.composition),
+            to_str(product.category_id), to_str(product.subcategory_id), to_str(product.brand), to_str(product.model),
+            to_str(product.unit_of_measure) or "UN", to_decimal(product.unit_weight), to_decimal(product.gross_weight), to_decimal(product.net_weight), to_decimal(product.length), to_decimal(product.width), to_decimal(product.height), to_decimal(product.volume),
+            to_str(product.packaging_unit), to_decimal(product.packaging_quantity), to_int(product.pallet_quantity),
+            to_str(product.ncm) or "", to_str(product.cest), to_str(product.cfop_venda_estadual) or "5102", to_str(product.cfop_venda_interestadual) or "6108",
+            to_str(product.origem_mercadoria) or "0", to_str(product.cst_icms) or "101", to_decimal(product.aliquota_icms) or 0, to_decimal(product.reducao_bc_icms),
+            to_decimal(product.icms_st_aliquota), to_decimal(product.icms_st_mva), to_str(product.cst_ipi), to_decimal(product.aliquota_ipi) or 0, to_str(product.codigo_enquadramento_ipi),
+            to_str(product.cst_pis) or "07", to_decimal(product.aliquota_pis) or 0, to_str(product.cst_cofins) or "07", to_decimal(product.aliquota_cofins) or 0,
+            to_decimal(product.cost_price) or 0, to_decimal(product.additional_costs) or 0, to_decimal(product.final_cost) or 0, to_decimal(product.markup_percentage) or 0,
+            to_decimal(product.sale_price) or 0, to_decimal(product.suggested_price), to_decimal(product.minimum_price), to_decimal(product.maximum_discount),
+            to_bool(product.stock_control), to_decimal(product.current_stock) or 0, to_decimal(product.reserved_stock) or 0, to_decimal(product.available_stock) or 0,
+            to_decimal(product.minimum_stock) or 0, to_decimal(product.maximum_stock), to_decimal(product.reorder_point), to_decimal(product.economic_lot), to_str(product.abc_classification),
+            to_str(product.main_supplier_id), to_str(product.supplier_code), to_str(product.supplier_description), to_int(product.lead_time_days),
+            to_decimal(product.minimum_order_qty), to_str(product.purchase_unit), to_decimal(product.conversion_factor),
+            to_str(product.status) or "ACTIVE", to_str(product.sales_status) or "ENABLED", to_str(product.purchase_status) or "ENABLED", to_bool(product.quality_control), to_bool(product.serialized_control),
+            to_bool(product.is_kit), to_bool(product.is_manufactured), to_bool(product.is_imported), to_bool(product.is_controlled),
+            to_str(product.observations), to_str(product.internal_notes), to_str(product.sales_notes), to_str(product.purchase_notes), to_str(product.tags),
+            to_str(product.main_image), to_str(product.additional_images), to_str(product.technical_drawings), to_str(product.certificates), to_str(product.manuals)
         )
 
         return row_to_dict(row)
@@ -791,25 +826,33 @@ async def update_product(
             RETURNING *
         """,
             product_id, now,
-            product.name, product.code, product.barcode_ean, product.barcode_ean128, product.sku, product.item_type,
-            product.description, product.short_description, product.technical_specification, product.application, product.composition,
-            product.category_id, product.subcategory_id, product.brand, product.model,
-            product.unit_of_measure, product.unit_weight, product.gross_weight, product.net_weight, product.length, product.width, product.height, product.volume,
-            product.packaging_unit, product.packaging_quantity, product.pallet_quantity,
-            product.ncm, product.cest, product.cfop_venda_estadual, product.cfop_venda_interestadual,
-            product.origem_mercadoria, product.cst_icms, product.aliquota_icms, product.reducao_bc_icms,
-            product.icms_st_aliquota, product.icms_st_mva, product.cst_ipi, product.aliquota_ipi, product.codigo_enquadramento_ipi,
-            product.cst_pis, product.aliquota_pis, product.cst_cofins, product.aliquota_cofins,
-            product.cost_price, product.additional_costs, product.final_cost, product.markup_percentage,
-            product.sale_price, product.suggested_price, product.minimum_price, product.maximum_discount,
-            product.stock_control, product.current_stock, product.reserved_stock, product.available_stock,
-            product.minimum_stock, product.maximum_stock, product.reorder_point, product.economic_lot, product.abc_classification,
-            product.main_supplier_id, product.supplier_code, product.supplier_description, product.lead_time_days,
-            product.minimum_order_qty, product.purchase_unit, product.conversion_factor,
-            product.status, product.sales_status, product.purchase_status, product.quality_control, product.serialized_control,
-            product.is_kit, product.is_manufactured, product.is_imported, product.is_controlled,
-            product.observations, product.internal_notes, product.sales_notes, product.purchase_notes, product.tags,
-            product.main_image, product.additional_images, product.technical_drawings, product.certificates, product.manuals
+            # Campos de texto
+            to_str(product.name), to_str(product.code), to_str(product.barcode_ean), to_str(product.barcode_ean128), to_str(product.sku), to_str(product.item_type),
+            to_str(product.description), to_str(product.short_description), to_str(product.technical_specification), to_str(product.application), to_str(product.composition),
+            to_str(product.category_id), to_str(product.subcategory_id), to_str(product.brand), to_str(product.model),
+            # Unidades e dimensões
+            to_str(product.unit_of_measure), to_decimal(product.unit_weight), to_decimal(product.gross_weight), to_decimal(product.net_weight), to_decimal(product.length), to_decimal(product.width), to_decimal(product.height), to_decimal(product.volume),
+            to_str(product.packaging_unit), to_int(product.packaging_quantity), to_int(product.pallet_quantity),
+            # Fiscal
+            to_str(product.ncm), to_str(product.cest), to_str(product.cfop_venda_estadual), to_str(product.cfop_venda_interestadual),
+            to_str(product.origem_mercadoria), to_str(product.cst_icms), to_decimal(product.aliquota_icms), to_decimal(product.reducao_bc_icms),
+            to_decimal(product.icms_st_aliquota), to_decimal(product.icms_st_mva), to_str(product.cst_ipi), to_decimal(product.aliquota_ipi), to_str(product.codigo_enquadramento_ipi),
+            to_str(product.cst_pis), to_decimal(product.aliquota_pis), to_str(product.cst_cofins), to_decimal(product.aliquota_cofins),
+            # Preços
+            to_decimal(product.cost_price), to_decimal(product.additional_costs), to_decimal(product.final_cost), to_decimal(product.markup_percentage),
+            to_decimal(product.sale_price), to_decimal(product.suggested_price), to_decimal(product.minimum_price), to_decimal(product.maximum_discount),
+            # Estoque
+            to_bool(product.stock_control), to_decimal(product.current_stock), to_decimal(product.reserved_stock), to_decimal(product.available_stock),
+            to_decimal(product.minimum_stock), to_decimal(product.maximum_stock), to_decimal(product.reorder_point), to_decimal(product.economic_lot), to_str(product.abc_classification),
+            # Fornecedor
+            to_str(product.main_supplier_id), to_str(product.supplier_code), to_str(product.supplier_description), to_int(product.lead_time_days),
+            to_decimal(product.minimum_order_qty), to_str(product.purchase_unit), to_decimal(product.conversion_factor),
+            # Status e controles
+            to_str(product.status), to_str(product.sales_status), to_str(product.purchase_status), to_bool(product.quality_control), to_bool(product.serialized_control),
+            to_bool(product.is_kit), to_bool(product.is_manufactured), to_bool(product.is_imported), to_bool(product.is_controlled),
+            # Textos adicionais
+            to_str(product.observations), to_str(product.internal_notes), to_str(product.sales_notes), to_str(product.purchase_notes), to_str(product.tags),
+            to_str(product.main_image), to_str(product.additional_images), to_str(product.technical_drawings), to_str(product.certificates), to_str(product.manuals)
         )
 
         if not row:
