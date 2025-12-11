@@ -78,17 +78,102 @@ class CustomerModel(BaseModel):
 
 class ProductModel(BaseModel):
     id: Optional[str] = None
-    code: Optional[str] = None
+    # Identificacao
     name: str
-    description: Optional[str] = None
-    unit: str = "UN"
+    code: str
+    barcode_ean: Optional[str] = None
+    barcode_ean128: Optional[str] = None
+    sku: Optional[str] = None
+    item_type: str = "PRODUCT"
+    # Descricao
+    description: str = ""
+    short_description: str = ""
+    technical_specification: Optional[str] = None
+    application: Optional[str] = None
+    composition: Optional[str] = None
+    category_id: Optional[str] = None
+    subcategory_id: Optional[str] = None
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    # Unidade e Medidas
+    unit_of_measure: str = "UN"
+    unit_weight: Optional[float] = None
+    gross_weight: Optional[float] = None
+    net_weight: Optional[float] = None
+    length: Optional[float] = None
+    width: Optional[float] = None
+    height: Optional[float] = None
+    volume: Optional[float] = None
+    packaging_unit: Optional[str] = None
+    packaging_quantity: Optional[float] = None
+    pallet_quantity: Optional[int] = None
+    # Fiscal
+    ncm: str = ""
+    cest: Optional[str] = None
+    cfop_venda_estadual: str = "5102"
+    cfop_venda_interestadual: str = "6108"
+    origem_mercadoria: str = "0"
+    cst_icms: str = "101"
+    aliquota_icms: float = 0
+    reducao_bc_icms: Optional[float] = None
+    icms_st_aliquota: Optional[float] = None
+    icms_st_mva: Optional[float] = None
+    cst_ipi: Optional[str] = None
+    aliquota_ipi: float = 0
+    codigo_enquadramento_ipi: Optional[str] = None
+    cst_pis: str = "07"
+    aliquota_pis: float = 0
+    cst_cofins: str = "07"
+    aliquota_cofins: float = 0
+    # Precos
     cost_price: float = 0
+    additional_costs: float = 0
+    final_cost: float = 0
+    markup_percentage: float = 0
     sale_price: float = 0
-    stock_quantity: float = 0
-    min_stock: float = 0
-    category: Optional[str] = None
-    barcode: Optional[str] = None
-    is_active: bool = True
+    suggested_price: Optional[float] = None
+    minimum_price: Optional[float] = None
+    maximum_discount: Optional[float] = None
+    # Estoque
+    stock_control: bool = True
+    current_stock: float = 0
+    reserved_stock: float = 0
+    available_stock: float = 0
+    minimum_stock: float = 0
+    maximum_stock: Optional[float] = None
+    reorder_point: Optional[float] = None
+    economic_lot: Optional[float] = None
+    abc_classification: Optional[str] = None
+    # Fornecedor
+    main_supplier_id: Optional[str] = None
+    supplier_code: Optional[str] = None
+    supplier_description: Optional[str] = None
+    lead_time_days: Optional[int] = None
+    minimum_order_qty: Optional[float] = None
+    purchase_unit: Optional[str] = None
+    conversion_factor: Optional[float] = None
+    # Status
+    status: str = "ACTIVE"
+    sales_status: str = "ENABLED"
+    purchase_status: str = "ENABLED"
+    quality_control: bool = False
+    serialized_control: bool = False
+    is_kit: bool = False
+    is_manufactured: bool = False
+    is_imported: bool = False
+    is_controlled: bool = False
+    # Observacoes
+    observations: Optional[str] = None
+    internal_notes: Optional[str] = None
+    sales_notes: Optional[str] = None
+    purchase_notes: Optional[str] = None
+    tags: Optional[str] = None
+    # Imagens
+    main_image: Optional[str] = None
+    additional_images: Optional[str] = None
+    technical_drawings: Optional[str] = None
+    certificates: Optional[str] = None
+    manuals: Optional[str] = None
 
 
 class SupplierModel(BaseModel):
@@ -583,16 +668,83 @@ async def create_product(
     conn = await get_tenant_connection(tenant)
 
     try:
+        import uuid
+        product_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
         row = await conn.fetchrow("""
-            INSERT INTO products (code, name, description, unit, cost_price, sale_price,
-                                  stock_quantity, min_stock, category, barcode, is_active)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO products (
+                id, created_at, updated_at,
+                name, code, barcode_ean, barcode_ean128, sku, item_type,
+                description, short_description, technical_specification, application, composition,
+                category_id, subcategory_id, brand, model,
+                unit_of_measure, unit_weight, gross_weight, net_weight, length, width, height, volume,
+                packaging_unit, packaging_quantity, pallet_quantity,
+                ncm, cest, cfop_venda_estadual, cfop_venda_interestadual,
+                origem_mercadoria, cst_icms, aliquota_icms, reducao_bc_icms,
+                icms_st_aliquota, icms_st_mva, cst_ipi, aliquota_ipi, codigo_enquadramento_ipi,
+                cst_pis, aliquota_pis, cst_cofins, aliquota_cofins,
+                cost_price, additional_costs, final_cost, markup_percentage,
+                sale_price, suggested_price, minimum_price, maximum_discount,
+                stock_control, current_stock, reserved_stock, available_stock,
+                minimum_stock, maximum_stock, reorder_point, economic_lot, abc_classification,
+                main_supplier_id, supplier_code, supplier_description, lead_time_days,
+                minimum_order_qty, purchase_unit, conversion_factor,
+                status, sales_status, purchase_status, quality_control, serialized_control,
+                is_kit, is_manufactured, is_imported, is_controlled,
+                observations, internal_notes, sales_notes, purchase_notes, tags,
+                main_image, additional_images, technical_drawings, certificates, manuals
+            )
+            VALUES (
+                $1, $2, $3,
+                $4, $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14,
+                $15, $16, $17, $18,
+                $19, $20, $21, $22, $23, $24, $25, $26,
+                $27, $28, $29,
+                $30, $31, $32, $33,
+                $34, $35, $36, $37,
+                $38, $39, $40, $41, $42,
+                $43, $44, $45, $46,
+                $47, $48, $49, $50,
+                $51, $52, $53, $54,
+                $55, $56, $57, $58,
+                $59, $60, $61, $62, $63,
+                $64, $65, $66, $67,
+                $68, $69, $70,
+                $71, $72, $73, $74, $75,
+                $76, $77, $78, $79,
+                $80, $81, $82, $83, $84,
+                $85, $86, $87, $88, $89
+            )
             RETURNING *
-        """, product.code, product.name, product.description, product.unit,
-           product.cost_price, product.sale_price, product.stock_quantity,
-           product.min_stock, product.category, product.barcode, product.is_active)
+        """,
+            product_id, now, now,
+            product.name, product.code, product.barcode_ean, product.barcode_ean128, product.sku, product.item_type,
+            product.description, product.short_description, product.technical_specification, product.application, product.composition,
+            product.category_id, product.subcategory_id, product.brand, product.model,
+            product.unit_of_measure, product.unit_weight, product.gross_weight, product.net_weight, product.length, product.width, product.height, product.volume,
+            product.packaging_unit, product.packaging_quantity, product.pallet_quantity,
+            product.ncm, product.cest, product.cfop_venda_estadual, product.cfop_venda_interestadual,
+            product.origem_mercadoria, product.cst_icms, product.aliquota_icms, product.reducao_bc_icms,
+            product.icms_st_aliquota, product.icms_st_mva, product.cst_ipi, product.aliquota_ipi, product.codigo_enquadramento_ipi,
+            product.cst_pis, product.aliquota_pis, product.cst_cofins, product.aliquota_cofins,
+            product.cost_price, product.additional_costs, product.final_cost, product.markup_percentage,
+            product.sale_price, product.suggested_price, product.minimum_price, product.maximum_discount,
+            product.stock_control, product.current_stock, product.reserved_stock, product.available_stock,
+            product.minimum_stock, product.maximum_stock, product.reorder_point, product.economic_lot, product.abc_classification,
+            product.main_supplier_id, product.supplier_code, product.supplier_description, product.lead_time_days,
+            product.minimum_order_qty, product.purchase_unit, product.conversion_factor,
+            product.status, product.sales_status, product.purchase_status, product.quality_control, product.serialized_control,
+            product.is_kit, product.is_manufactured, product.is_imported, product.is_controlled,
+            product.observations, product.internal_notes, product.sales_notes, product.purchase_notes, product.tags,
+            product.main_image, product.additional_images, product.technical_drawings, product.certificates, product.manuals
+        )
 
         return row_to_dict(row)
+    except Exception as e:
+        print(f"[PRODUCTS] Erro ao criar produto: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao criar produto: {str(e)}")
     finally:
         await conn.close()
 
@@ -608,21 +760,61 @@ async def update_product(
     conn = await get_tenant_connection(tenant)
 
     try:
+        now = datetime.utcnow()
+
         row = await conn.fetchrow("""
             UPDATE products SET
-                code = $2, name = $3, description = $4, unit = $5, cost_price = $6,
-                sale_price = $7, stock_quantity = $8, min_stock = $9, category = $10,
-                barcode = $11, is_active = $12, updated_at = $13
+                updated_at = $2,
+                name = $3, code = $4, barcode_ean = $5, barcode_ean128 = $6, sku = $7, item_type = $8,
+                description = $9, short_description = $10, technical_specification = $11, application = $12, composition = $13,
+                category_id = $14, subcategory_id = $15, brand = $16, model = $17,
+                unit_of_measure = $18, unit_weight = $19, gross_weight = $20, net_weight = $21, length = $22, width = $23, height = $24, volume = $25,
+                packaging_unit = $26, packaging_quantity = $27, pallet_quantity = $28,
+                ncm = $29, cest = $30, cfop_venda_estadual = $31, cfop_venda_interestadual = $32,
+                origem_mercadoria = $33, cst_icms = $34, aliquota_icms = $35, reducao_bc_icms = $36,
+                icms_st_aliquota = $37, icms_st_mva = $38, cst_ipi = $39, aliquota_ipi = $40, codigo_enquadramento_ipi = $41,
+                cst_pis = $42, aliquota_pis = $43, cst_cofins = $44, aliquota_cofins = $45,
+                cost_price = $46, additional_costs = $47, final_cost = $48, markup_percentage = $49,
+                sale_price = $50, suggested_price = $51, minimum_price = $52, maximum_discount = $53,
+                stock_control = $54, current_stock = $55, reserved_stock = $56, available_stock = $57,
+                minimum_stock = $58, maximum_stock = $59, reorder_point = $60, economic_lot = $61, abc_classification = $62,
+                main_supplier_id = $63, supplier_code = $64, supplier_description = $65, lead_time_days = $66,
+                minimum_order_qty = $67, purchase_unit = $68, conversion_factor = $69,
+                status = $70, sales_status = $71, purchase_status = $72, quality_control = $73, serialized_control = $74,
+                is_kit = $75, is_manufactured = $76, is_imported = $77, is_controlled = $78,
+                observations = $79, internal_notes = $80, sales_notes = $81, purchase_notes = $82, tags = $83,
+                main_image = $84, additional_images = $85, technical_drawings = $86, certificates = $87, manuals = $88
             WHERE id = $1
             RETURNING *
-        """, product_id, product.code, product.name, product.description, product.unit,
-           product.cost_price, product.sale_price, product.stock_quantity,
-           product.min_stock, product.category, product.barcode, product.is_active,
-           datetime.utcnow())
+        """,
+            product_id, now,
+            product.name, product.code, product.barcode_ean, product.barcode_ean128, product.sku, product.item_type,
+            product.description, product.short_description, product.technical_specification, product.application, product.composition,
+            product.category_id, product.subcategory_id, product.brand, product.model,
+            product.unit_of_measure, product.unit_weight, product.gross_weight, product.net_weight, product.length, product.width, product.height, product.volume,
+            product.packaging_unit, product.packaging_quantity, product.pallet_quantity,
+            product.ncm, product.cest, product.cfop_venda_estadual, product.cfop_venda_interestadual,
+            product.origem_mercadoria, product.cst_icms, product.aliquota_icms, product.reducao_bc_icms,
+            product.icms_st_aliquota, product.icms_st_mva, product.cst_ipi, product.aliquota_ipi, product.codigo_enquadramento_ipi,
+            product.cst_pis, product.aliquota_pis, product.cst_cofins, product.aliquota_cofins,
+            product.cost_price, product.additional_costs, product.final_cost, product.markup_percentage,
+            product.sale_price, product.suggested_price, product.minimum_price, product.maximum_discount,
+            product.stock_control, product.current_stock, product.reserved_stock, product.available_stock,
+            product.minimum_stock, product.maximum_stock, product.reorder_point, product.economic_lot, product.abc_classification,
+            product.main_supplier_id, product.supplier_code, product.supplier_description, product.lead_time_days,
+            product.minimum_order_qty, product.purchase_unit, product.conversion_factor,
+            product.status, product.sales_status, product.purchase_status, product.quality_control, product.serialized_control,
+            product.is_kit, product.is_manufactured, product.is_imported, product.is_controlled,
+            product.observations, product.internal_notes, product.sales_notes, product.purchase_notes, product.tags,
+            product.main_image, product.additional_images, product.technical_drawings, product.certificates, product.manuals
+        )
 
         if not row:
             raise HTTPException(status_code=404, detail="Produto nao encontrado")
         return row_to_dict(row)
+    except Exception as e:
+        print(f"[PRODUCTS] Erro ao atualizar produto: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar produto: {str(e)}")
     finally:
         await conn.close()
 
