@@ -93,10 +93,24 @@ class ProductModel(BaseModel):
 
 class SupplierModel(BaseModel):
     id: Optional[str] = None
-    name: str
-    document: Optional[str] = None
+    # Campos PJ
+    company_name: Optional[str] = None
+    trade_name: Optional[str] = None
+    cnpj: Optional[str] = None
+    state_registration: Optional[str] = None
+    # Campos PF
+    name: Optional[str] = None
+    cpf: Optional[str] = None
+    # Tipo de pessoa
+    tipo_pessoa: str = "PJ"
+    # Contato
     email: Optional[str] = None
     phone: Optional[str] = None
+    website: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    # Endereco
     address: Optional[str] = None
     address_number: Optional[str] = None
     address_complement: Optional[str] = None
@@ -104,7 +118,13 @@ class SupplierModel(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     zip_code: Optional[str] = None
+    country: Optional[str] = "BR"
+    # Comercial
+    payment_terms: Optional[str] = None
+    delivery_time: Optional[str] = None
+    category: Optional[str] = None
     notes: Optional[str] = None
+    status: str = "active"
     is_active: bool = True
 
 
@@ -664,7 +684,8 @@ async def list_suppliers(
                 LIMIT $1 OFFSET $2
             """, limit, skip)
 
-        return [row_to_dict(row) for row in rows]
+        suppliers = [row_to_dict(row) for row in rows]
+        return {"suppliers": suppliers, "total": len(suppliers)}
     finally:
         await conn.close()
 
@@ -679,18 +700,40 @@ async def create_supplier(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Gera UUID para novo fornecedor
+        import uuid
+        supplier_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        # Determina is_active baseado no status
+        is_active = supplier.is_active if supplier.is_active is not None else (supplier.status == "active")
+
         row = await conn.fetchrow("""
-            INSERT INTO suppliers (name, document, email, phone, address, address_number,
-                                   address_complement, neighborhood, city, state, zip_code,
-                                   notes, is_active)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            INSERT INTO suppliers (
+                id, tipo_pessoa,
+                company_name, trade_name, cnpj, state_registration,
+                name, cpf,
+                email, phone, website, contact_name, contact_email, contact_phone,
+                address, address_number, address_complement, neighborhood, city, state, zip_code, country,
+                payment_terms, delivery_time, category, notes, is_active,
+                created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
             RETURNING *
-        """, supplier.name, supplier.document, supplier.email, supplier.phone,
-           supplier.address, supplier.address_number, supplier.address_complement,
-           supplier.neighborhood, supplier.city, supplier.state, supplier.zip_code,
-           supplier.notes, supplier.is_active)
+        """,
+            supplier_id, supplier.tipo_pessoa,
+            supplier.company_name, supplier.trade_name, supplier.cnpj, supplier.state_registration,
+            supplier.name, supplier.cpf,
+            supplier.email, supplier.phone, supplier.website, supplier.contact_name, supplier.contact_email, supplier.contact_phone,
+            supplier.address, supplier.address_number, supplier.address_complement, supplier.neighborhood, supplier.city, supplier.state, supplier.zip_code, supplier.country,
+            supplier.payment_terms, supplier.delivery_time, supplier.category, supplier.notes, is_active,
+            now, now
+        )
 
         return row_to_dict(row)
+    except Exception as e:
+        print(f"[SUPPLIERS] Erro ao criar fornecedor: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao criar fornecedor: {str(e)}")
     finally:
         await conn.close()
 
@@ -706,23 +749,38 @@ async def update_supplier(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Determina is_active baseado no status
+        is_active = supplier.is_active if supplier.is_active is not None else (supplier.status == "active")
+
         row = await conn.fetchrow("""
             UPDATE suppliers SET
-                name = $2, document = $3, email = $4, phone = $5, address = $6,
-                address_number = $7, address_complement = $8, neighborhood = $9,
-                city = $10, state = $11, zip_code = $12, notes = $13, is_active = $14,
-                updated_at = $15
+                tipo_pessoa = $2,
+                company_name = $3, trade_name = $4, cnpj = $5, state_registration = $6,
+                name = $7, cpf = $8,
+                email = $9, phone = $10, website = $11, contact_name = $12, contact_email = $13, contact_phone = $14,
+                address = $15, address_number = $16, address_complement = $17, neighborhood = $18,
+                city = $19, state = $20, zip_code = $21, country = $22,
+                payment_terms = $23, delivery_time = $24, category = $25, notes = $26, is_active = $27,
+                updated_at = $28
             WHERE id = $1
             RETURNING *
-        """, supplier_id, supplier.name, supplier.document, supplier.email,
-           supplier.phone, supplier.address, supplier.address_number,
-           supplier.address_complement, supplier.neighborhood, supplier.city,
-           supplier.state, supplier.zip_code, supplier.notes, supplier.is_active,
-           datetime.utcnow())
+        """,
+            supplier_id, supplier.tipo_pessoa,
+            supplier.company_name, supplier.trade_name, supplier.cnpj, supplier.state_registration,
+            supplier.name, supplier.cpf,
+            supplier.email, supplier.phone, supplier.website, supplier.contact_name, supplier.contact_email, supplier.contact_phone,
+            supplier.address, supplier.address_number, supplier.address_complement, supplier.neighborhood,
+            supplier.city, supplier.state, supplier.zip_code, supplier.country,
+            supplier.payment_terms, supplier.delivery_time, supplier.category, supplier.notes, is_active,
+            datetime.utcnow()
+        )
 
         if not row:
             raise HTTPException(status_code=404, detail="Fornecedor nao encontrado")
         return row_to_dict(row)
+    except Exception as e:
+        print(f"[SUPPLIERS] Erro ao atualizar fornecedor: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar fornecedor: {str(e)}")
     finally:
         await conn.close()
 
