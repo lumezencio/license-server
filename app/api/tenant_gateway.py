@@ -79,15 +79,15 @@ class CustomerModel(BaseModel):
 class ProductModel(BaseModel):
     id: Optional[str] = None
     # Identificacao
-    name: str
-    code: str
+    name: Optional[str] = None
+    code: Optional[str] = None
     barcode_ean: Optional[str] = None
     barcode_ean128: Optional[str] = None
     sku: Optional[str] = None
-    item_type: str = "PRODUCT"
+    item_type: Optional[str] = "PRODUCT"
     # Descricao
-    description: str = ""
-    short_description: str = ""
+    description: Optional[str] = ""
+    short_description: Optional[str] = ""
     technical_specification: Optional[str] = None
     application: Optional[str] = None
     composition: Optional[str] = None
@@ -96,72 +96,72 @@ class ProductModel(BaseModel):
     brand: Optional[str] = None
     model: Optional[str] = None
     # Unidade e Medidas
-    unit_of_measure: str = "UN"
-    unit_weight: Optional[float] = None
-    gross_weight: Optional[float] = None
-    net_weight: Optional[float] = None
-    length: Optional[float] = None
-    width: Optional[float] = None
-    height: Optional[float] = None
-    volume: Optional[float] = None
+    unit_of_measure: Optional[str] = "UN"
+    unit_weight: Optional[Any] = None
+    gross_weight: Optional[Any] = None
+    net_weight: Optional[Any] = None
+    length: Optional[Any] = None
+    width: Optional[Any] = None
+    height: Optional[Any] = None
+    volume: Optional[Any] = None
     packaging_unit: Optional[str] = None
-    packaging_quantity: Optional[float] = None
-    pallet_quantity: Optional[int] = None
+    packaging_quantity: Optional[Any] = None
+    pallet_quantity: Optional[Any] = None
     # Fiscal
-    ncm: str = ""
+    ncm: Optional[str] = ""
     cest: Optional[str] = None
-    cfop_venda_estadual: str = "5102"
-    cfop_venda_interestadual: str = "6108"
-    origem_mercadoria: str = "0"
-    cst_icms: str = "101"
-    aliquota_icms: float = 0
-    reducao_bc_icms: Optional[float] = None
-    icms_st_aliquota: Optional[float] = None
-    icms_st_mva: Optional[float] = None
+    cfop_venda_estadual: Optional[str] = "5102"
+    cfop_venda_interestadual: Optional[str] = "6108"
+    origem_mercadoria: Optional[str] = "0"
+    cst_icms: Optional[str] = "101"
+    aliquota_icms: Optional[Any] = 0
+    reducao_bc_icms: Optional[Any] = None
+    icms_st_aliquota: Optional[Any] = None
+    icms_st_mva: Optional[Any] = None
     cst_ipi: Optional[str] = None
-    aliquota_ipi: float = 0
+    aliquota_ipi: Optional[Any] = 0
     codigo_enquadramento_ipi: Optional[str] = None
-    cst_pis: str = "07"
-    aliquota_pis: float = 0
-    cst_cofins: str = "07"
-    aliquota_cofins: float = 0
+    cst_pis: Optional[str] = "07"
+    aliquota_pis: Optional[Any] = 0
+    cst_cofins: Optional[str] = "07"
+    aliquota_cofins: Optional[Any] = 0
     # Precos
-    cost_price: float = 0
-    additional_costs: float = 0
-    final_cost: float = 0
-    markup_percentage: float = 0
-    sale_price: float = 0
-    suggested_price: Optional[float] = None
-    minimum_price: Optional[float] = None
-    maximum_discount: Optional[float] = None
+    cost_price: Optional[Any] = 0
+    additional_costs: Optional[Any] = 0
+    final_cost: Optional[Any] = 0
+    markup_percentage: Optional[Any] = 0
+    sale_price: Optional[Any] = 0
+    suggested_price: Optional[Any] = None
+    minimum_price: Optional[Any] = None
+    maximum_discount: Optional[Any] = None
     # Estoque
-    stock_control: bool = True
-    current_stock: float = 0
-    reserved_stock: float = 0
-    available_stock: float = 0
-    minimum_stock: float = 0
-    maximum_stock: Optional[float] = None
-    reorder_point: Optional[float] = None
-    economic_lot: Optional[float] = None
+    stock_control: Optional[Any] = True
+    current_stock: Optional[Any] = 0
+    reserved_stock: Optional[Any] = 0
+    available_stock: Optional[Any] = 0
+    minimum_stock: Optional[Any] = 0
+    maximum_stock: Optional[Any] = None
+    reorder_point: Optional[Any] = None
+    economic_lot: Optional[Any] = None
     abc_classification: Optional[str] = None
     # Fornecedor
     main_supplier_id: Optional[str] = None
     supplier_code: Optional[str] = None
     supplier_description: Optional[str] = None
-    lead_time_days: Optional[int] = None
-    minimum_order_qty: Optional[float] = None
+    lead_time_days: Optional[Any] = None
+    minimum_order_qty: Optional[Any] = None
     purchase_unit: Optional[str] = None
-    conversion_factor: Optional[float] = None
+    conversion_factor: Optional[Any] = None
     # Status
-    status: str = "ACTIVE"
-    sales_status: str = "ENABLED"
-    purchase_status: str = "ENABLED"
-    quality_control: bool = False
-    serialized_control: bool = False
-    is_kit: bool = False
-    is_manufactured: bool = False
-    is_imported: bool = False
-    is_controlled: bool = False
+    status: Optional[str] = "ACTIVE"
+    sales_status: Optional[str] = "ENABLED"
+    purchase_status: Optional[str] = "ENABLED"
+    quality_control: Optional[Any] = False
+    serialized_control: Optional[Any] = False
+    is_kit: Optional[Any] = False
+    is_manufactured: Optional[Any] = False
+    is_imported: Optional[Any] = False
+    is_controlled: Optional[Any] = False
     # Observacoes
     observations: Optional[str] = None
     internal_notes: Optional[str] = None
@@ -174,6 +174,9 @@ class ProductModel(BaseModel):
     technical_drawings: Optional[str] = None
     certificates: Optional[str] = None
     manuals: Optional[str] = None
+
+    class Config:
+        extra = "allow"  # Permite campos extras que nao estao no modelo
 
 
 class SupplierModel(BaseModel):
