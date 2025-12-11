@@ -3528,8 +3528,8 @@ async def get_reports_registry(
 
         if type == "suppliers":
             base_query = """
-                SELECT id, COALESCE(company_name, trade_name) as name,
-                    cpf_cnpj as document, email, phone, address, city, state,
+                SELECT id, COALESCE(company_name, trade_name, name) as name,
+                    COALESCE(cnpj, cpf) as document, email, phone, address, city, state,
                     COALESCE(is_active, true) as active
                 FROM suppliers WHERE 1=1
             """
@@ -3543,10 +3543,12 @@ async def get_reports_registry(
                 base_query += """ AND (
                     UPPER(COALESCE(company_name, '')) LIKE $1 OR
                     UPPER(COALESCE(trade_name, '')) LIKE $1 OR
-                    UPPER(COALESCE(cpf_cnpj, '')) LIKE $1 OR
+                    UPPER(COALESCE(name, '')) LIKE $1 OR
+                    UPPER(COALESCE(cnpj, '')) LIKE $1 OR
+                    UPPER(COALESCE(cpf, '')) LIKE $1 OR
                     UPPER(COALESCE(email, '')) LIKE $1
                 )"""
-            base_query += " ORDER BY COALESCE(company_name, trade_name)"
+            base_query += " ORDER BY COALESCE(company_name, trade_name, name)"
             rows = await conn.fetch(base_query, search_param) if search_param else await conn.fetch(base_query)
 
         elif type == "products":
