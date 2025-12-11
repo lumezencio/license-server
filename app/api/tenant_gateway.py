@@ -3507,38 +3507,120 @@ async def get_reports_management(
 @router.get("/reports/registry")
 async def get_reports_registry(
     type: Optional[str] = "customers",
+    status: Optional[str] = None,
+    search: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Relatorio de cadastros"""
+    """Relatorio de cadastros com filtros de status e busca"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Prepara filtro de busca
+        search_param = None
+        if search and search.strip():
+            search_param = f"%{search.strip().upper()}%"
+
         if type == "suppliers":
-            rows = await conn.fetch("""
+            base_query = """
                 SELECT id, COALESCE(company_name, trade_name) as name,
-                    cpf_cnpj as document, email, phone, address, city, state
-                FROM suppliers WHERE is_active = true OR is_active IS NULL
-                ORDER BY COALESCE(company_name, trade_name)
-            """)
+                    cpf_cnpj as document, email, phone, address, city, state,
+                    COALESCE(is_active, true) as active
+                FROM suppliers WHERE 1=1
+            """
+            if status == "active":
+                base_query += " AND is_active = true"
+            elif status == "inactive":
+                base_query += " AND is_active = false"
+            else:
+                base_query += " AND (is_active = true OR is_active IS NULL)"
+            if search_param:
+                base_query += """ AND (
+                    UPPER(COALESCE(company_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(trade_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(cpf_cnpj, '')) LIKE $1 OR
+                    UPPER(COALESCE(email, '')) LIKE $1
+                )"""
+            base_query += " ORDER BY COALESCE(company_name, trade_name)"
+            rows = await conn.fetch(base_query, search_param) if search_param else await conn.fetch(base_query)
+
         elif type == "products":
-            rows = await conn.fetch("""
-                SELECT id, code, name, description, unit, cost_price, sale_price, stock_quantity
-                FROM products
-                ORDER BY name
-            """)
+            base_query = """
+                SELECT id, code, name, description as category, unit,
+                    cost_price as cost, sale_price as price, stock_quantity as quantity,
+                    COALESCE(is_active, true) as active
+                FROM products WHERE 1=1
+            """
+            if status == "active":
+                base_query += " AND is_active = true"
+            elif status == "inactive":
+                base_query += " AND is_active = false"
+            if search_param:
+                base_query += """ AND (
+                    UPPER(COALESCE(code, '')) LIKE $1 OR
+                    UPPER(COALESCE(name, '')) LIKE $1 OR
+                    UPPER(COALESCE(description, '')) LIKE $1
+                )"""
+            base_query += " ORDER BY name"
+            rows = await conn.fetch(base_query, search_param) if search_param else await conn.fetch(base_query)
+
+        elif type == "users":
+            base_query = """
+                SELECT id, COALESCE(full_name, username, email) as name,
+                    email, role, updated_at as last_login,
+                    COALESCE(is_active, true) as active
+                FROM users WHERE 1=1
+            """
+            if status == "active":
+                base_query += " AND is_active = true"
+            elif status == "inactive":
+                base_query += " AND is_active = false"
+            if search_param:
+                base_query += """ AND (
+                    UPPER(COALESCE(full_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(username, '')) LIKE $1 OR
+                    UPPER(COALESCE(email, '')) LIKE $1
+                )"""
+            base_query += " ORDER BY COALESCE(full_name, username, email)"
+            rows = await conn.fetch(base_query, search_param) if search_param else await conn.fetch(base_query)
+
         else:  # customers
-            rows = await conn.fetch("""
+            base_query = """
                 SELECT id, COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
-                    cpf_cnpj as document, email, phone, address, city, state
-                FROM customers WHERE is_active = true OR is_active IS NULL
-                ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)
-            """)
+                    cpf_cnpj as document, email, phone, address, city, state,
+                    COALESCE(is_active, true) as active
+                FROM customers WHERE 1=1
+            """
+            if status == "active":
+                base_query += " AND is_active = true"
+            elif status == "inactive":
+                base_query += " AND is_active = false"
+            else:
+                base_query += " AND (is_active = true OR is_active IS NULL)"
+            if search_param:
+                base_query += """ AND (
+                    UPPER(COALESCE(first_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(last_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(company_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(trade_name, '')) LIKE $1 OR
+                    UPPER(COALESCE(cpf_cnpj, '')) LIKE $1 OR
+                    UPPER(COALESCE(email, '')) LIKE $1
+                )"""
+            base_query += " ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)"
+            rows = await conn.fetch(base_query, search_param) if search_param else await conn.fetch(base_query)
+
+        # Calcula resumo
+        data = [row_to_dict(row) for row in rows]
+        active_count = sum(1 for item in data if item.get('active', True))
+        inactive_count = len(data) - active_count
 
         return {
-            "data": [row_to_dict(row) for row in rows],
+            "data": data,
             "summary": {
-                "count": len(rows)
+                "total": len(data),
+                "count": len(data),
+                "active": active_count,
+                "inactive": inactive_count
             }
         }
     finally:
