@@ -611,8 +611,13 @@ async def list_products(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Schema legado usa sku em vez de code, barcode_ean em vez de barcode
+        # Conta total de produtos para paginação
         if search:
+            total = await conn.fetchval("""
+                SELECT COUNT(*) FROM products
+                WHERE name ILIKE $1 OR sku ILIKE $1 OR code ILIKE $1
+                    OR barcode_ean ILIKE $1
+            """, f"%{search}%")
             rows = await conn.fetch("""
                 SELECT *,
                     COALESCE(code, sku) as code,
@@ -625,6 +630,7 @@ async def list_products(
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         else:
+            total = await conn.fetchval("SELECT COUNT(*) FROM products")
             rows = await conn.fetch("""
                 SELECT *,
                     COALESCE(code, sku) as code,
@@ -635,7 +641,9 @@ async def list_products(
                 LIMIT $1 OFFSET $2
             """, limit, skip)
 
-        return [row_to_dict(row) for row in rows]
+        items = [row_to_dict(row) for row in rows]
+        pages = (total + limit - 1) // limit if limit > 0 else 1
+        return {"items": items, "total": total, "pages": pages}
     finally:
         await conn.close()
 
