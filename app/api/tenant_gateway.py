@@ -2799,25 +2799,122 @@ async def get_accounts_payable_summary(
 async def get_accounts_payable_detailed(
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Retorna estatisticas detalhadas de contas a pagar"""
+    """Retorna estatisticas detalhadas de contas a pagar no formato esperado pelo frontend"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Schema legado usa amount_paid em vez de paid_amount
-        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable") or 0
-        paid = await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable") or 0
-        pending = await conn.fetchval("""
-            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
-            WHERE status::text IN ('pending', 'PENDING')
+        from datetime import date, timedelta
+        today = date.today()
+        week_later = today + timedelta(days=7)
+        month_start = today.replace(day=1)
+        month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+        # Contagens
+        total_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0
+        pending_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """) or 0
+        paid_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND UPPER(status::text) = 'PAID'
+        """) or 0
+        overdue_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date < $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, today) or 0
+
+        # Valores
+        total_amount = float(await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
+        paid_amount = float(await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
+        balance = float(await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """) or 0)
+        overdue_amount = float(await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date < $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, today) or 0)
+
+        # Vencimentos
+        due_today_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date = $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, today) or 0
+        due_today_amount = float(await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date = $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, today) or 0)
+
+        due_week_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, today, week_later) or 0
+        due_week_amount = float(await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, today, week_later) or 0)
+
+        due_month_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, month_start, month_end) or 0
+        due_month_amount = float(await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            WHERE (installment_number = 0 OR installment_number IS NULL)
+            AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+        """, month_start, month_end) or 0)
+
+        # Percentuais
+        pct_paid = round((paid_count / total_count * 100), 1) if total_count > 0 else 0
+        pct_pending = round((pending_count / total_count * 100), 1) if total_count > 0 else 0
+        pct_overdue = round((overdue_count / total_count * 100), 1) if total_count > 0 else 0
+        pct_paid_amount = round((paid_amount / total_amount * 100), 1) if total_amount > 0 else 0
+        avg_ticket = round(total_amount / total_count, 2) if total_count > 0 else 0
 
         return {
-            "total_value": float(total),
-            "paid_value": float(paid),
-            "pending_value": float(pending),
-            "overdue_value": 0.0,
-            "average_ticket": 0.0
+            "counts": {
+                "total": total_count,
+                "pending": pending_count,
+                "paid": paid_count,
+                "overdue": overdue_count
+            },
+            "amounts": {
+                "total": round(total_amount, 2),
+                "paid": round(paid_amount, 2),
+                "balance": round(balance, 2),
+                "overdue": round(overdue_amount, 2),
+                "avg_ticket": avg_ticket
+            },
+            "due_today": {
+                "count": due_today_count,
+                "amount": round(due_today_amount, 2)
+            },
+            "due_week": {
+                "count": due_week_count,
+                "amount": round(due_week_amount, 2)
+            },
+            "due_month": {
+                "count": due_month_count,
+                "amount": round(due_month_amount, 2)
+            },
+            "percentages": {
+                "paid": pct_paid,
+                "pending": pct_pending,
+                "overdue": pct_overdue,
+                "paid_amount": pct_paid_amount
+            }
         }
     finally:
         await conn.close()
