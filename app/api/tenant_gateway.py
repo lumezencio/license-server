@@ -3506,7 +3506,7 @@ async def get_reports_management(
 
 @router.get("/reports/registry")
 async def get_reports_registry(
-    type: Optional[str] = "customers",
+    type: Optional[str] = Query("customers", alias="type"),
     status: Optional[str] = None,
     search: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
@@ -3514,6 +3514,11 @@ async def get_reports_registry(
     """Relatorio de cadastros com filtros de status e busca"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
+
+    # Log para debug
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"[REGISTRY REPORT] type={type}, status={status}, search={search}")
 
     try:
         # Prepara filtro de busca
