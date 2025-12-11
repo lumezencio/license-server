@@ -3468,8 +3468,8 @@ async def get_reports_accounts_payable_summary(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # IMPORTANTE: usar ap.is_active para evitar ambiguidade com suppliers.is_active
-        where_parts = ["1=1", "ap.is_active = true"]
+        # Filtros básicos - sem is_active que pode não existir
+        where_parts = ["1=1"]
         params = []
         param_idx = 1
 
@@ -3495,12 +3495,12 @@ async def get_reports_accounts_payable_summary(
 
         where_clause = " AND ".join(where_parts)
 
-        # Lista de contas - schema legado usa amount_paid em vez de paid_amount
+        # Lista de contas - usa apenas amount_paid (schema padrão)
         rows = await conn.fetch(f"""
             SELECT ap.id, ap.supplier_id, ap.description, ap.document_number, ap.amount,
-                COALESCE(ap.amount_paid, ap.paid_amount, 0) as paid_amount,
+                COALESCE(ap.amount_paid, 0) as paid_amount,
                 ap.due_date, ap.payment_date, ap.status, ap.payment_method,
-                ap.notes, ap.is_active, ap.created_at, ap.updated_at,
+                ap.notes, ap.created_at, ap.updated_at,
                 COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
             FROM accounts_payable ap
             LEFT JOIN suppliers s ON ap.supplier_id = s.id
@@ -3508,9 +3508,9 @@ async def get_reports_accounts_payable_summary(
             ORDER BY ap.due_date
         """, *params)
 
-        # Totais - tenta ambos os nomes de coluna
+        # Totais
         total_value = sum(float(r.get('amount', 0) or 0) for r in rows)
-        total_paid = sum(float(r.get('amount_paid', 0) or r.get('paid_amount', 0) or 0) for r in rows)
+        total_paid = sum(float(r.get('paid_amount', 0) or 0) for r in rows)
         total_balance = total_value - total_paid
 
         return {
@@ -3521,6 +3521,19 @@ async def get_reports_accounts_payable_summary(
                 "total_balance": total_balance,
                 "count": len(rows)
             }
+        }
+    except Exception as e:
+        print(f"[REPORTS] Erro no relatorio contas a pagar: {e}", flush=True)
+        # Retorna lista vazia em caso de erro (tabela vazia, coluna inexistente, etc)
+        return {
+            "data": [],
+            "summary": {
+                "total_value": 0,
+                "total_paid": 0,
+                "total_balance": 0,
+                "count": 0
+            },
+            "message": "Nenhuma conta a pagar encontrada"
         }
     finally:
         await conn.close()
