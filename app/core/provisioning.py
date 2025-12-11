@@ -103,12 +103,19 @@ class TenantProvisioningService:
         username: str,
         password: str
     ) -> bool:
-        """Cria usuário no PostgreSQL"""
+        """Cria usuário no PostgreSQL ou atualiza a senha se já existir"""
         conn = await self._get_master_connection()
         try:
             # Verifica se usuário já existe
             if await self.user_exists(username):
-                logger.info(f"Usuário {username} já existe")
+                # IMPORTANTE: Atualiza a senha para garantir sincronização
+                # Isso resolve o problema de senhas desincronizadas entre
+                # a tabela tenants e o PostgreSQL após tentativas falhas
+                logger.info(f"Usuário {username} já existe, atualizando senha...")
+                await conn.execute(f"""
+                    ALTER USER "{username}" WITH PASSWORD '{password}'
+                """)
+                logger.info(f"Senha do usuário {username} atualizada")
                 return True
 
             # Cria usuário com senha
@@ -137,7 +144,11 @@ class TenantProvisioningService:
         try:
             # Verifica se banco já existe
             if await self.database_exists(database_name):
-                logger.info(f"Banco {database_name} já existe")
+                logger.info(f"Banco {database_name} já existe, garantindo owner correto...")
+                # Garante que o owner está correto
+                await conn.execute(f"""
+                    ALTER DATABASE "{database_name}" OWNER TO "{owner}"
+                """)
                 return True
 
             # Cria banco de dados
