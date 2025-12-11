@@ -3553,7 +3553,7 @@ async def get_reports_registry(
 
         elif type == "products":
             base_query = """
-                SELECT id, code, name, description as category, unit,
+                SELECT id, code, name, description as category, unit_of_measure as unit,
                     cost_price as cost, sale_price as price, stock_quantity as quantity,
                     COALESCE(is_active, true) as active
                 FROM products WHERE 1=1
