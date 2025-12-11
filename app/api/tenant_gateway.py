@@ -703,6 +703,22 @@ def to_str(val):
         return None
     return str(val)
 
+def generate_slug(name: str) -> str:
+    """Gera um slug a partir do nome"""
+    import re
+    import unicodedata
+    if not name:
+        return "produto"
+    # Remove acentos
+    slug = unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('ASCII')
+    # Converte para minúsculas
+    slug = slug.lower()
+    # Substitui espaços e caracteres especiais por hífen
+    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    # Remove hífens duplicados e do início/fim
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    return slug or "produto"
+
 
 @router.post("/products")
 async def create_product(
@@ -718,9 +734,13 @@ async def create_product(
         product_id = str(uuid.uuid4())
         now = datetime.utcnow()
 
+        # Gera slug a partir do nome
+        product_name = to_str(product.name) or "Produto"
+        product_slug = generate_slug(product_name)
+
         row = await conn.fetchrow("""
             INSERT INTO products (
-                id, created_at, updated_at,
+                id, created_at, updated_at, slug,
                 name, code, barcode_ean, barcode_ean128, sku, item_type,
                 description, short_description, technical_specification, application, composition,
                 category_id, subcategory_id, brand, model,
@@ -742,31 +762,31 @@ async def create_product(
                 main_image, additional_images, technical_drawings, certificates, manuals
             )
             VALUES (
-                $1, $2, $3,
-                $4, $5, $6, $7, $8, $9,
-                $10, $11, $12, $13, $14,
-                $15, $16, $17, $18,
-                $19, $20, $21, $22, $23, $24, $25, $26,
-                $27, $28, $29,
-                $30, $31, $32, $33,
-                $34, $35, $36, $37,
-                $38, $39, $40, $41, $42,
-                $43, $44, $45, $46,
-                $47, $48, $49, $50,
-                $51, $52, $53, $54,
-                $55, $56, $57, $58,
-                $59, $60, $61, $62, $63,
-                $64, $65, $66, $67,
-                $68, $69, $70,
-                $71, $72, $73, $74, $75,
-                $76, $77, $78, $79,
-                $80, $81, $82, $83, $84,
-                $85, $86, $87, $88, $89
+                $1, $2, $3, $4,
+                $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15,
+                $16, $17, $18, $19,
+                $20, $21, $22, $23, $24, $25, $26, $27,
+                $28, $29, $30,
+                $31, $32, $33, $34,
+                $35, $36, $37, $38,
+                $39, $40, $41, $42, $43,
+                $44, $45, $46, $47,
+                $48, $49, $50, $51,
+                $52, $53, $54, $55,
+                $56, $57, $58, $59,
+                $60, $61, $62, $63, $64,
+                $65, $66, $67, $68,
+                $69, $70, $71,
+                $72, $73, $74, $75, $76,
+                $77, $78, $79, $80,
+                $81, $82, $83, $84, $85,
+                $86, $87, $88, $89, $90
             )
             RETURNING *
         """,
-            product_id, now, now,
-            to_str(product.name), to_str(product.code), to_str(product.barcode_ean), to_str(product.barcode_ean128), to_str(product.sku), to_str(product.item_type) or "PRODUCT",
+            product_id, now, now, product_slug,
+            product_name, to_str(product.code), to_str(product.barcode_ean), to_str(product.barcode_ean128), to_str(product.sku), to_str(product.item_type) or "PRODUCT",
             to_str(product.description) or "", to_str(product.short_description) or "", to_str(product.technical_specification), to_str(product.application), to_str(product.composition),
             to_str(product.category_id), to_str(product.subcategory_id), to_str(product.brand), to_str(product.model),
             to_str(product.unit_of_measure) or "UN", to_decimal(product.unit_weight), to_decimal(product.gross_weight), to_decimal(product.net_weight), to_decimal(product.length), to_decimal(product.width), to_decimal(product.height), to_decimal(product.volume),
