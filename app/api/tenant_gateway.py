@@ -1471,10 +1471,12 @@ async def get_account_installments(
             # account_id é o parent_id (conta pai) ou o próprio id se for conta simples
             row_dict["account_id"] = row_dict.get("parent_id") or row_dict.get("id")
 
-            # Calcula balance (saldo devedor)
-            amount = float(row_dict.get("amount") or 0)
-            paid_amount = float(row_dict.get("paid_amount") or 0)
-            row_dict["balance"] = amount - paid_amount
+            # IMPORTANTE: Arredonda valores para evitar erros de ponto flutuante
+            amount = round(float(row_dict.get("amount") or 0), 2)
+            paid_amount = round(float(row_dict.get("paid_amount") or 0), 2)
+            row_dict["amount"] = amount
+            row_dict["paid_amount"] = paid_amount
+            row_dict["balance"] = round(amount - paid_amount, 2)
 
             if installment_num > 0:
                 items.append(row_dict)
@@ -2121,7 +2123,8 @@ async def create_bulk_accounts_receivable(
             # 2. Cria as parcelas filhas
             installment_amount = round(total_amount / num_installments, 2)
             # Ajusta última parcela para compensar arredondamento
-            last_installment_amount = total_amount - (installment_amount * (num_installments - 1))
+            # IMPORTANTE: round() para evitar erros de ponto flutuante
+            last_installment_amount = round(total_amount - (installment_amount * (num_installments - 1)), 2)
 
             for i in range(1, num_installments + 1):
                 installment_id = str(uuid.uuid4())
@@ -2129,7 +2132,7 @@ async def create_bulk_accounts_receivable(
                 installment_due_date = due_date + relativedelta(months=i-1)
 
                 # Valor da parcela (última pode ser diferente por arredondamento)
-                amount = last_installment_amount if i == num_installments else installment_amount
+                amount = round(last_installment_amount if i == num_installments else installment_amount, 2)
 
                 installment_row = await conn.fetchrow("""
                     INSERT INTO accounts_receivable (
