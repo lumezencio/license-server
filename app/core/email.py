@@ -168,201 +168,396 @@ class EmailService:
             trial_days: Dias de trial
             login_url: URL de login
         """
-        subject = f"Bem-vindo ao Tech-EMP Sistema - Seus dados de acesso"
+        subject = f"🎉 Bem-vindo ao Tech-EMP Sistema - Seus dados de acesso"
 
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-            border-radius: 10px 10px 0 0;
-        }}
-        .header h1 {{
-            margin: 0;
-            font-size: 28px;
-        }}
-        .content {{
-            background: #f9fafb;
-            padding: 30px;
-            border: 1px solid #e5e7eb;
-        }}
-        .credentials {{
-            background: white;
-            border: 2px solid #667eea;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-        }}
-        .credentials h3 {{
-            color: #667eea;
-            margin-top: 0;
-        }}
-        .credential-item {{
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #e5e7eb;
-        }}
-        .credential-item:last-child {{
-            border-bottom: none;
-        }}
-        .credential-label {{
-            font-weight: bold;
-            color: #374151;
-        }}
-        .credential-value {{
-            color: #667eea;
-            font-family: monospace;
-            font-size: 14px;
-        }}
-        .license-key {{
-            background: #fef3c7;
-            border: 1px solid #f59e0b;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-            margin: 20px 0;
-        }}
-        .license-key code {{
-            font-size: 20px;
-            font-weight: bold;
-            color: #92400e;
-            letter-spacing: 2px;
-        }}
-        .button {{
-            display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px 30px;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            margin: 20px 0;
-        }}
-        .button:hover {{
-            opacity: 0.9;
-        }}
-        .trial-notice {{
-            background: #dbeafe;
-            border: 1px solid #3b82f6;
-            color: #1e40af;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-        }}
-        .footer {{
-            background: #1f2937;
-            color: #9ca3af;
-            padding: 20px;
-            text-align: center;
-            border-radius: 0 0 10px 10px;
-            font-size: 12px;
-        }}
-        .footer a {{
-            color: #60a5fa;
-        }}
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body>
-    <div class="header">
-        <h1>Tech-EMP Sistema</h1>
-        <p>Sistema de Gestao Empresarial</p>
-    </div>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 650px; margin: 0 auto; background-color: #ffffff;">
 
-    <div class="content">
-        <h2>Ola, {name}!</h2>
+        <!-- HEADER -->
+        <tr>
+            <td style="background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%); padding: 40px 30px; text-align: center; border-radius: 12px 12px 0 0;">
+                <h1 style="margin: 0; color: #ffffff; font-size: 32px; font-weight: bold;">🏆 Tech-EMP</h1>
+                <p style="margin: 10px 0 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">Sistema de Gestao Empresarial Completo</p>
+            </td>
+        </tr>
 
-        <p>Seja bem-vindo ao <strong>Tech-EMP Sistema</strong>! Seu cadastro foi realizado com sucesso.</p>
+        <!-- WELCOME MESSAGE -->
+        <tr>
+            <td style="padding: 40px 30px 20px 30px;">
+                <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 24px;">Ola, {name}! 👋</h2>
+                <p style="margin: 0; color: #475569; font-size: 16px; line-height: 1.6;">
+                    E com grande satisfacao que lhe damos as <strong>boas-vindas</strong> ao <strong style="color: #ea580c;">Tech-EMP Sistema</strong>!
+                    Seu cadastro foi realizado com sucesso e estamos muito felizes em te-lo conosco.
+                </p>
+            </td>
+        </tr>
 
-        <div class="trial-notice">
-            <strong>Periodo de Avaliacao:</strong> Voce tem <strong>{trial_days} dias</strong> para testar todas as funcionalidades do sistema gratuitamente.
-        </div>
+        <!-- TRIAL NOTICE -->
+        <tr>
+            <td style="padding: 0 30px 20px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #dbeafe 0%, #e0e7ff 100%); border-radius: 12px; border-left: 4px solid #3b82f6;">
+                    <tr>
+                        <td style="padding: 20px;">
+                            <p style="margin: 0; color: #1e40af; font-size: 16px;">
+                                🎁 <strong>Presente Especial:</strong> Voce tem <strong style="color: #1d4ed8; font-size: 18px;">{trial_days} dias GRATIS</strong> para explorar todas as funcionalidades do sistema!
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
 
-        <div class="credentials">
-            <h3>Seus Dados de Acesso</h3>
+        <!-- CREDENTIALS BOX -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: #ffffff; border: 2px solid #f59e0b; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                    <tr>
+                        <td style="background: #fef3c7; padding: 15px 20px; border-radius: 10px 10px 0 0;">
+                            <h3 style="margin: 0; color: #92400e; font-size: 18px;">🔐 Seus Dados de Acesso</h3>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 20px;">
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td style="padding: 12px 0; border-bottom: 1px solid #e5e7eb;">
+                                        <span style="color: #64748b; font-size: 14px;">📧 E-mail:</span><br>
+                                        <span style="color: #1e293b; font-size: 16px; font-weight: bold;">{to_email}</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px 0; border-bottom: 1px solid #e5e7eb;">
+                                        <span style="color: #64748b; font-size: 14px;">🔑 Senha inicial:</span><br>
+                                        <span style="color: #ea580c; font-size: 18px; font-weight: bold; font-family: monospace;">{password_hint}</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px 0;">
+                                        <span style="color: #64748b; font-size: 14px;">🏢 Codigo do Tenant:</span><br>
+                                        <span style="color: #1e293b; font-size: 16px; font-weight: bold; font-family: monospace;">{tenant_code}</span>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
 
-            <div class="credential-item">
-                <span class="credential-label">E-mail:</span>
-                <span class="credential-value">{to_email}</span>
-            </div>
+        <!-- LICENSE KEY -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-radius: 12px; border: 1px solid #f59e0b;">
+                    <tr>
+                        <td style="padding: 20px; text-align: center;">
+                            <p style="margin: 0 0 10px 0; color: #92400e; font-size: 14px;">🗝️ Sua Chave de Licenca (guarde em local seguro):</p>
+                            <p style="margin: 0; color: #78350f; font-size: 22px; font-weight: bold; font-family: monospace; letter-spacing: 3px;">{license_key}</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
 
-            <div class="credential-item">
-                <span class="credential-label">Senha inicial:</span>
-                <span class="credential-value">{password_hint}</span>
-            </div>
+        <!-- ACCESS BUTTON -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px; text-align: center;">
+                <a href="{login_url}" style="display: inline-block; background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%); color: #ffffff; padding: 18px 50px; text-decoration: none; border-radius: 10px; font-weight: bold; font-size: 18px; box-shadow: 0 4px 15px rgba(234, 88, 12, 0.4);">
+                    🚀 ACESSAR O SISTEMA
+                </a>
+            </td>
+        </tr>
 
-            <div class="credential-item">
-                <span class="credential-label">Codigo do Tenant:</span>
-                <span class="credential-value">{tenant_code}</span>
-            </div>
-        </div>
+        <!-- GETTING STARTED SECTION -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+                    <tr>
+                        <td style="padding: 25px;">
+                            <h3 style="margin: 0 0 20px 0; color: #1e293b; font-size: 20px; text-align: center;">
+                                📋 Como Comecar - Passo a Passo
+                            </h3>
+                            <p style="margin: 0 0 20px 0; color: #64748b; font-size: 14px; text-align: center;">
+                                Para aproveitar ao maximo o sistema, recomendamos que voce faca os cadastros basicos <strong>antes</strong> de iniciar os lancamentos:
+                            </p>
 
-        <div class="license-key">
-            <p style="margin: 0 0 10px 0; color: #92400e;">Sua Chave de Licenca:</p>
-            <code>{license_key}</code>
-        </div>
+                            <!-- STEP 1 -->
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 15px;">
+                                <tr>
+                                    <td width="50" style="vertical-align: top;">
+                                        <div style="background: linear-gradient(135deg, #ec4899 0%, #be185d 100%); color: white; width: 40px; height: 40px; border-radius: 10px; text-align: center; line-height: 40px; font-size: 20px;">👥</div>
+                                    </td>
+                                    <td style="padding-left: 15px; vertical-align: top;">
+                                        <p style="margin: 0; color: #1e293b; font-size: 16px; font-weight: bold;">1. Cadastre seus Clientes</p>
+                                        <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Registre todos os seus clientes com dados completos (nome, CPF/CNPJ, endereco, contato). Isso facilitara as vendas e emissao de notas.</p>
+                                    </td>
+                                </tr>
+                            </table>
 
-        <p style="text-align: center;">
-            <a href="{login_url}" class="button">ACESSAR O SISTEMA</a>
-        </p>
+                            <!-- STEP 2 -->
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 15px;">
+                                <tr>
+                                    <td width="50" style="vertical-align: top;">
+                                        <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%); color: white; width: 40px; height: 40px; border-radius: 10px; text-align: center; line-height: 40px; font-size: 20px;">📦</div>
+                                    </td>
+                                    <td style="padding-left: 15px; vertical-align: top;">
+                                        <p style="margin: 0; color: #1e293b; font-size: 16px; font-weight: bold;">2. Cadastre seus Produtos</p>
+                                        <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Se voce trabalha com produtos, cadastre-os com codigo, descricao, preco de custo e venda. Assim o controle de estoque sera automatico.</p>
+                                    </td>
+                                </tr>
+                            </table>
 
-        <p><strong>Importante:</strong></p>
-        <ul>
-            <li>Recomendamos que voce altere sua senha no primeiro acesso</li>
-            <li>Guarde sua chave de licenca em local seguro</li>
-            <li>Em caso de duvidas, entre em contato com nosso suporte</li>
-        </ul>
-    </div>
+                            <!-- STEP 3 -->
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 15px;">
+                                <tr>
+                                    <td width="50" style="vertical-align: top;">
+                                        <div style="background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%); color: white; width: 40px; height: 40px; border-radius: 10px; text-align: center; line-height: 40px; font-size: 20px;">🚚</div>
+                                    </td>
+                                    <td style="padding-left: 15px; vertical-align: top;">
+                                        <p style="margin: 0; color: #1e293b; font-size: 16px; font-weight: bold;">3. Cadastre seus Fornecedores</p>
+                                        <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Registre os fornecedores para facilitar o lancamento de compras e contas a pagar.</p>
+                                    </td>
+                                </tr>
+                            </table>
 
-    <div class="footer">
-        <p>Este e-mail foi enviado automaticamente pelo sistema Tech-EMP.</p>
-        <p>Em caso de duvidas, acesse <a href="{settings.APP_URL}">{settings.APP_URL}</a></p>
-        <p>&copy; 2024 Tech-EMP. Todos os direitos reservados.</p>
-    </div>
+                            <!-- STEP 4 -->
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 15px;">
+                                <tr>
+                                    <td width="50" style="vertical-align: top;">
+                                        <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; width: 40px; height: 40px; border-radius: 10px; text-align: center; line-height: 40px; font-size: 20px;">👤</div>
+                                    </td>
+                                    <td style="padding-left: 15px; vertical-align: top;">
+                                        <p style="margin: 0; color: #1e293b; font-size: 16px; font-weight: bold;">4. Cadastre seus Usuarios</p>
+                                        <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Adicione outros usuarios que irao acessar o sistema, definindo as permissoes de cada um.</p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- STEP 5 -->
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td width="50" style="vertical-align: top;">
+                                        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; width: 40px; height: 40px; border-radius: 10px; text-align: center; line-height: 40px; font-size: 20px;">💰</div>
+                                    </td>
+                                    <td style="padding-left: 15px; vertical-align: top;">
+                                        <p style="margin: 0; color: #1e293b; font-size: 16px; font-weight: bold;">5. Inicie os Lancamentos</p>
+                                        <p style="margin: 5px 0 0 0; color: #64748b; font-size: 14px;">Apos os cadastros, voce esta pronto! Comece a registrar vendas, compras, contas a pagar e receber.</p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- MODULES SECTION -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <h3 style="margin: 0 0 20px 0; color: #1e293b; font-size: 18px; text-align: center;">
+                    ✨ Modulos Disponiveis no Sistema
+                </h3>
+                <table width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                        <td width="50%" style="padding: 5px;">
+                            <table width="100%" cellpadding="0" cellspacing="0" style="background: #eff6ff; border-radius: 8px; border: 1px solid #bfdbfe;">
+                                <tr><td style="padding: 12px; text-align: center;">
+                                    <span style="font-size: 24px;">📊</span><br>
+                                    <span style="color: #1e40af; font-size: 13px; font-weight: bold;">Dashboard</span>
+                                </td></tr>
+                            </table>
+                        </td>
+                        <td width="50%" style="padding: 5px;">
+                            <table width="100%" cellpadding="0" cellspacing="0" style="background: #ecfdf5; border-radius: 8px; border: 1px solid #a7f3d0;">
+                                <tr><td style="padding: 12px; text-align: center;">
+                                    <span style="font-size: 24px;">💵</span><br>
+                                    <span style="color: #065f46; font-size: 13px; font-weight: bold;">Financeiro</span>
+                                </td></tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td width="50%" style="padding: 5px;">
+                            <table width="100%" cellpadding="0" cellspacing="0" style="background: #fdf4ff; border-radius: 8px; border: 1px solid #f5d0fe;">
+                                <tr><td style="padding: 12px; text-align: center;">
+                                    <span style="font-size: 24px;">🛒</span><br>
+                                    <span style="color: #86198f; font-size: 13px; font-weight: bold;">PDV / Vendas</span>
+                                </td></tr>
+                            </table>
+                        </td>
+                        <td width="50%" style="padding: 5px;">
+                            <table width="100%" cellpadding="0" cellspacing="0" style="background: #fff7ed; border-radius: 8px; border: 1px solid #fed7aa;">
+                                <tr><td style="padding: 12px; text-align: center;">
+                                    <span style="font-size: 24px;">📦</span><br>
+                                    <span style="color: #c2410c; font-size: 13px; font-weight: bold;">Estoque</span>
+                                </td></tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td width="50%" style="padding: 5px;">
+                            <table width="100%" cellpadding="0" cellspacing="0" style="background: #f5f3ff; border-radius: 8px; border: 1px solid #ddd6fe;">
+                                <tr><td style="padding: 12px; text-align: center;">
+                                    <span style="font-size: 24px;">⚖️</span><br>
+                                    <span style="color: #5b21b6; font-size: 13px; font-weight: bold;">Calculos Juridicos</span>
+                                </td></tr>
+                            </table>
+                        </td>
+                        <td width="50%" style="padding: 5px;">
+                            <table width="100%" cellpadding="0" cellspacing="0" style="background: #fef2f2; border-radius: 8px; border: 1px solid #fecaca;">
+                                <tr><td style="padding: 12px; text-align: center;">
+                                    <span style="font-size: 24px;">📄</span><br>
+                                    <span style="color: #b91c1c; font-size: 13px; font-weight: bold;">Relatorios PDF</span>
+                                </td></tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- IMPORTANT NOTES -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: #fefce8; border-radius: 12px; border: 1px solid #fde047;">
+                    <tr>
+                        <td style="padding: 20px;">
+                            <h4 style="margin: 0 0 15px 0; color: #854d0e; font-size: 16px;">⚠️ Lembretes Importantes:</h4>
+                            <ul style="margin: 0; padding-left: 20px; color: #713f12; font-size: 14px; line-height: 1.8;">
+                                <li>Recomendamos <strong>alterar sua senha</strong> no primeiro acesso</li>
+                                <li>Guarde sua <strong>chave de licenca</strong> em local seguro</li>
+                                <li>Faca os cadastros basicos antes de iniciar os lancamentos</li>
+                                <li>Explore o Dashboard para ver os indicadores da sua empresa</li>
+                            </ul>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- SUPPORT SECTION -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-radius: 12px; border: 1px solid #6ee7b7;">
+                    <tr>
+                        <td style="padding: 25px; text-align: center;">
+                            <h4 style="margin: 0 0 15px 0; color: #065f46; font-size: 18px;">📞 Precisa de Ajuda?</h4>
+                            <p style="margin: 0 0 15px 0; color: #047857; font-size: 14px;">
+                                Nossa equipe de suporte esta pronta para ajudar voce!
+                            </p>
+                            <p style="margin: 0; color: #065f46; font-size: 22px; font-weight: bold;">
+                                📱 (35) 9.8858-6400
+                            </p>
+                            <p style="margin: 10px 0 0 0; color: #047857; font-size: 13px;">
+                                WhatsApp disponivel • Atendimento rapido e personalizado
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+            <td style="background: #1e293b; padding: 30px; text-align: center; border-radius: 0 0 12px 12px;">
+                <p style="margin: 0 0 10px 0; color: #f59e0b; font-size: 18px; font-weight: bold;">Tech-EMP Sistema</p>
+                <p style="margin: 0 0 15px 0; color: #94a3b8; font-size: 13px;">
+                    Transformando a gestao da sua empresa
+                </p>
+                <p style="margin: 0 0 10px 0; color: #64748b; font-size: 12px;">
+                    Este e-mail foi enviado automaticamente. Por favor, nao responda.
+                </p>
+                <p style="margin: 0; color: #64748b; font-size: 12px;">
+                    <a href="{settings.APP_URL}" style="color: #60a5fa; text-decoration: none;">{settings.APP_URL}</a>
+                </p>
+                <p style="margin: 15px 0 0 0; color: #475569; font-size: 11px;">
+                    &copy; 2024 Tech-EMP. Todos os direitos reservados.
+                </p>
+            </td>
+        </tr>
+    </table>
 </body>
 </html>
 """
 
         text_content = f"""
-Bem-vindo ao Tech-EMP Sistema!
+============================================
+🎉 BEM-VINDO AO TECH-EMP SISTEMA!
+============================================
 
 Ola, {name}!
 
+E com grande satisfacao que lhe damos as boas-vindas ao Tech-EMP Sistema!
 Seu cadastro foi realizado com sucesso.
 
-PERIODO DE AVALIACAO: Voce tem {trial_days} dias para testar gratuitamente.
+🎁 PRESENTE ESPECIAL: Voce tem {trial_days} dias GRATIS para explorar todas as funcionalidades!
 
-SEUS DADOS DE ACESSO:
-- E-mail: {to_email}
-- Senha inicial: {password_hint}
-- Codigo do Tenant: {tenant_code}
+--------------------------------------------
+🔐 SEUS DADOS DE ACESSO
+--------------------------------------------
+📧 E-mail: {to_email}
+🔑 Senha inicial: {password_hint}
+🏢 Codigo do Tenant: {tenant_code}
+🗝️ Chave de Licenca: {license_key}
 
-SUA CHAVE DE LICENCA: {license_key}
+🚀 ACESSAR O SISTEMA: {login_url}
 
-ACESSAR O SISTEMA: {login_url}
+--------------------------------------------
+📋 COMO COMECAR - PASSO A PASSO
+--------------------------------------------
+Para aproveitar ao maximo o sistema, faca os cadastros basicos ANTES de iniciar os lancamentos:
 
-IMPORTANTE:
-- Recomendamos que voce altere sua senha no primeiro acesso
-- Guarde sua chave de licenca em local seguro
-- Em caso de duvidas, entre em contato com nosso suporte
+1. 👥 CADASTRE SEUS CLIENTES
+   Registre todos os seus clientes com dados completos (nome, CPF/CNPJ, endereco, contato).
 
----
+2. 📦 CADASTRE SEUS PRODUTOS
+   Se voce trabalha com produtos, cadastre-os com codigo, descricao, preco de custo e venda.
+
+3. 🚚 CADASTRE SEUS FORNECEDORES
+   Registre os fornecedores para facilitar o lancamento de compras e contas a pagar.
+
+4. 👤 CADASTRE SEUS USUARIOS
+   Adicione outros usuarios que irao acessar o sistema, definindo as permissoes de cada um.
+
+5. 💰 INICIE OS LANCAMENTOS
+   Apos os cadastros, comece a registrar vendas, compras, contas a pagar e receber.
+
+--------------------------------------------
+✨ MODULOS DISPONIVEIS
+--------------------------------------------
+📊 Dashboard - Indicadores em tempo real
+💵 Financeiro - Contas a pagar e receber
+🛒 PDV / Vendas - Ponto de venda rapido
+📦 Estoque - Controle de produtos
+⚖️ Calculos Juridicos - Correcao monetaria
+📄 Relatorios PDF - 13 relatorios completos
+
+--------------------------------------------
+⚠️ LEMBRETES IMPORTANTES
+--------------------------------------------
+• Recomendamos alterar sua senha no primeiro acesso
+• Guarde sua chave de licenca em local seguro
+• Faca os cadastros basicos antes de iniciar os lancamentos
+• Explore o Dashboard para ver os indicadores da sua empresa
+
+--------------------------------------------
+📞 PRECISA DE AJUDA?
+--------------------------------------------
+Nossa equipe de suporte esta pronta para ajudar voce!
+
+📱 WhatsApp: (35) 9.8858-6400
+Atendimento rapido e personalizado
+
+--------------------------------------------
 Tech-EMP Sistema
 {settings.APP_URL}
+© 2024 Tech-EMP. Todos os direitos reservados.
 """
 
         return self.send_email(to_email, subject, html_content, text_content)
