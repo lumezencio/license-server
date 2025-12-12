@@ -1245,6 +1245,9 @@ async def list_purchases(
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Conta total para paginação
+        total = await conn.fetchval("SELECT COUNT(*) FROM purchases") or 0
+
         # Schema legado: suppliers usa company_name/trade_name/name
         rows = await conn.fetch("""
             SELECT p.*,
@@ -1255,7 +1258,8 @@ async def list_purchases(
             LIMIT $1 OFFSET $2
         """, limit, skip)
 
-        return [row_to_dict(row) for row in rows]
+        items = [row_to_dict(row) for row in rows]
+        return {"items": items, "total": total, "purchases": items}
     finally:
         await conn.close()
 
@@ -2411,13 +2415,35 @@ async def list_accounts_payable(
     limit: int = 100,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    purchase_id: Optional[str] = None,
+    page_size: Optional[int] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Lista contas a pagar do tenant - retorna apenas contas PAI (installment_number = 0 ou NULL)"""
+    """Lista contas a pagar do tenant - retorna apenas contas PAI (installment_number = 0 ou NULL)
+    Se purchase_id for informado, retorna TODAS as parcelas vinculadas à compra (para baixa)
+    """
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
+    # Usa page_size se fornecido, senão usa limit
+    effective_limit = page_size if page_size else limit
+
     try:
+        # Se purchase_id foi informado, retorna TODAS as parcelas vinculadas à compra
+        # Isso é usado pelo modal de parcelas para baixa
+        if purchase_id:
+            rows = await conn.fetch("""
+                SELECT ap.*,
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+                FROM accounts_payable ap
+                LEFT JOIN suppliers s ON ap.supplier_id = s.id
+                WHERE ap.purchase_id = $1
+                ORDER BY ap.installment_number
+            """, purchase_id)
+
+            items = [row_to_dict(row) for row in rows]
+            return {"items": items, "accounts": items, "total": len(items)}
+
         # Filtro para retornar apenas contas PAI (não parcelas filhas)
         # Igual ao comportamento de accounts_receivable
         parent_filter = "(ap.installment_number = 0 OR ap.installment_number IS NULL)"
@@ -2439,7 +2465,7 @@ async def list_accounts_payable(
                     OR s.name ILIKE $1 OR ap.description ILIKE $1)
                 ORDER BY ap.due_date
                 LIMIT $2 OFFSET $3
-            """, f"%{search}%", limit, skip)
+            """, f"%{search}%", effective_limit, skip)
         elif status:
             # Converte status para UPPERCASE para comparar com ENUM
             status_upper = status.upper()
@@ -2454,7 +2480,7 @@ async def list_accounts_payable(
                   AND UPPER(ap.status::text) = $3
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
-            """, limit, skip, status_upper)
+            """, effective_limit, skip, status_upper)
         else:
             rows = await conn.fetch(f"""
                 SELECT ap.*,
@@ -2466,7 +2492,7 @@ async def list_accounts_payable(
                 WHERE {parent_filter}
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
-            """, limit, skip)
+            """, effective_limit, skip)
 
         items = [row_to_dict(row) for row in rows]
         return {"items": items, "total": total}
