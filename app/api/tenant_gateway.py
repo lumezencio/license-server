@@ -1620,17 +1620,30 @@ async def update_account_receivable(
 
             if remaining_installments:
                 # Distribui a diferença (inverso: se pagou mais, diminui nas próximas)
-                diff_per_installment = -amount_diff / len(remaining_installments)
+                # IMPORTANTE: Arredondar para 2 casas decimais para evitar centavos extras
+                num_remaining = len(remaining_installments)
+                diff_per_installment = round(-amount_diff / num_remaining, 2)
 
-                for inst in remaining_installments:
-                    new_inst_amount = max(0, float(inst["amount"]) + diff_per_installment)
+                # Calcula o total que será distribuído
+                total_distributed = round(diff_per_installment * (num_remaining - 1), 2)
+                # A última parcela recebe o restante para garantir soma exata
+                last_diff = round(-amount_diff - total_distributed, 2)
+
+                for i, inst in enumerate(remaining_installments):
+                    # Última parcela recebe o ajuste para zerar diferença de centavos
+                    if i == num_remaining - 1:
+                        adjustment = last_diff
+                    else:
+                        adjustment = diff_per_installment
+
+                    new_inst_amount = round(max(0, float(inst["amount"]) + adjustment), 2)
                     await conn.execute("""
                         UPDATE accounts_receivable
                         SET amount = $2, updated_at = $3
                         WHERE id = $1
                     """, inst["id"], new_inst_amount, datetime.utcnow())
 
-                logger.info(f"Redistribuído {-amount_diff:.2f} entre {len(remaining_installments)} parcelas restantes")
+                logger.info(f"Redistribuído {-amount_diff:.2f} entre {num_remaining} parcelas restantes")
 
         return row_to_dict(row)
     finally:
