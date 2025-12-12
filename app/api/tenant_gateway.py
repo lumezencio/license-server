@@ -2821,6 +2821,66 @@ async def get_company(
         await conn.close()
 
 
+@router.post("/company")
+@router.post("/company/")
+async def create_company(
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria dados da empresa do tenant"""
+    import uuid
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        company_data = await request.json()
+
+        # Verifica se já existe uma empresa
+        existing = await conn.fetchrow("SELECT id FROM companies LIMIT 1")
+        if existing:
+            raise HTTPException(status_code=400, detail="Empresa já cadastrada. Use PUT para atualizar.")
+
+        company_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        allowed_fields = [
+            'person_type', 'trade_name', 'legal_name', 'document',
+            'state_registration', 'municipal_registration', 'email',
+            'phone', 'mobile', 'website', 'zip_code', 'street',
+            'number', 'complement', 'neighborhood', 'city', 'state',
+            'country', 'bank_name', 'bank_agency', 'bank_account',
+            'pix_key', 'logo_path', 'description', 'notes'
+        ]
+
+        # Filtra apenas campos permitidos
+        insert_data = {k: v for k, v in company_data.items() if k in allowed_fields and v is not None}
+
+        # Constrói query de INSERT
+        columns = ['id', 'is_active', 'created_at', 'updated_at'] + list(insert_data.keys())
+        placeholders = ['$1', '$2', '$3', '$4'] + [f'${i+5}' for i in range(len(insert_data))]
+        values = [company_id, True, now, now] + list(insert_data.values())
+
+        query = f"""
+            INSERT INTO companies ({', '.join(columns)})
+            VALUES ({', '.join(placeholders)})
+            RETURNING *
+        """
+
+        row = await conn.fetchrow(query, *values)
+        data = row_to_dict(row)
+
+        print(f"[COMPANY] Empresa criada: {company_id}", flush=True)
+        return data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[COMPANY] Erro ao criar empresa: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
 
 
 @router.put("/company/{company_id}")
