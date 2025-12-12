@@ -1479,6 +1479,57 @@ async def create_purchase(
         await conn.close()
 
 
+@router.delete("/purchases/{purchase_id}")
+async def delete_purchase(
+    purchase_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Deleta uma compra e suas contas a pagar relacionadas"""
+    import uuid
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Verifica se a compra existe
+        purchase = await conn.fetchrow(
+            "SELECT id FROM purchases WHERE id = $1",
+            purchase_id
+        )
+        if not purchase:
+            raise HTTPException(status_code=404, detail="Compra não encontrada")
+
+        # Deleta contas a pagar relacionadas (incluindo parcelas filhas)
+        await conn.execute(
+            "DELETE FROM accounts_payable WHERE purchase_id = $1",
+            purchase_id
+        )
+
+        # Deleta itens da compra
+        await conn.execute(
+            "DELETE FROM purchase_items WHERE purchase_id = $1",
+            purchase_id
+        )
+
+        # Deleta a compra
+        await conn.execute(
+            "DELETE FROM purchases WHERE id = $1",
+            purchase_id
+        )
+
+        print(f"[PURCHASE] Compra {purchase_id} deletada com sucesso", flush=True)
+        return {"message": "Compra deletada com sucesso"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[PURCHASE] Erro ao deletar compra: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
 # === ENDPOINTS - ACCOUNTS RECEIVABLE ===
 
 @router.get("/accounts-receivable")
@@ -3267,45 +3318,67 @@ async def get_dashboard_overview(
             WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
         """) or 0
 
-        # Contas a receber - pendentes (exclui contas PAI de parcelamentos para evitar duplicacao)
+        # Contas a receber - filtra para evitar duplicação de contas PAI
         # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
-        receivables_pending = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+        receivable_filter = """
             AND is_active = true
             AND (
-                parent_id IS NOT NULL  -- Parcelas filhas
-                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))  -- Contas simples
+                parent_id IS NOT NULL
+                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
             )
+        """
+
+        # Contas a receber - pendentes
+        receivables_pending = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {receivable_filter}
         """) or 0
 
         # Contas a receber - recebidas (mesma logica: filhas + simples)
-        receivables_received = await conn.fetchval("""
+        receivables_received = await conn.fetchval(f"""
             SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
-            AND is_active = true
-            AND (
-                parent_id IS NOT NULL
-                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
-            )
+            WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+            {receivable_filter}
         """) or 0
 
         # Contas a receber - vencidas (mesma logica: filhas + simples)
-        receivables_overdue = await conn.fetchval("""
+        receivables_overdue = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
             AND due_date < CURRENT_DATE
-            AND is_active = true
+            {receivable_filter}
+        """) or 0
+
+        # Contas a pagar - filtra para evitar duplicação igual contas a receber
+        # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
+        payable_filter = """
             AND (
                 parent_id IS NOT NULL
                 OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
             )
+        """
+
+        # Contas a pagar pendentes
+        payables_pending = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {payable_filter}
         """) or 0
 
-        # Contas a pagar pendentes - schema legado usa amount_paid ou balance
-        payables_pending = await conn.fetchval("""
+        # Contas a pagar - pagas
+        payables_paid = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+            WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+            {payable_filter}
+        """) or 0
+
+        # Contas a pagar - vencidas
+        payables_overdue = await conn.fetchval(f"""
             SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
-            WHERE status::text IN ('pending', 'PENDING')
+            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            AND due_date < CURRENT_DATE
+            {payable_filter}
         """) or 0
 
         return {
@@ -3316,11 +3389,15 @@ async def get_dashboard_overview(
             "sales_month": float(sales_month),
             "accounts_receivable": float(receivables_pending),
             "accounts_payable": float(payables_pending),
-            # Campos adicionais para o frontend
+            # Campos adicionais para o frontend - Contas a Receber
             "receivable_pending": float(receivables_pending),
             "receivable_received": float(receivables_received),
             "receivable_overdue": float(receivables_overdue),
+            # Campos adicionais para o frontend - Contas a Pagar
             "payable_pending": float(payables_pending),
+            "payable_paid": float(payables_paid),
+            "payable_overdue": float(payables_overdue),
+            # Campos de receita
             "revenue_today": 0.0,
             "revenue_week": 0.0,
             "revenue_month": float(sales_month),
