@@ -2413,44 +2413,57 @@ async def list_accounts_payable(
     search: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Lista contas a pagar do tenant"""
+    """Lista contas a pagar do tenant - retorna apenas contas PAI (installment_number = 0 ou NULL)"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Conta total para paginacao
-        total = await conn.fetchval("SELECT COUNT(*) FROM accounts_payable") or 0
+        # Filtro para retornar apenas contas PAI (não parcelas filhas)
+        # Igual ao comportamento de accounts_receivable
+        parent_filter = "(ap.installment_number = 0 OR ap.installment_number IS NULL)"
+
+        # Conta total para paginacao (apenas contas PAI)
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_payable ap WHERE {parent_filter}") or 0
 
         # Schema legado: suppliers usa company_name/trade_name/name
         if search:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
-                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
+                    (SELECT MIN(child.due_date) FROM accounts_payable child
+                     WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE s.company_name ILIKE $1 OR s.trade_name ILIKE $1
-                    OR s.name ILIKE $1 OR ap.description ILIKE $1
+                WHERE {parent_filter}
+                  AND (s.company_name ILIKE $1 OR s.trade_name ILIKE $1
+                    OR s.name ILIKE $1 OR ap.description ILIKE $1)
                 ORDER BY ap.due_date
                 LIMIT $2 OFFSET $3
             """, f"%{search}%", limit, skip)
         elif status:
             # Converte status para UPPERCASE para comparar com ENUM
             status_upper = status.upper()
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
-                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
+                    (SELECT MIN(child.due_date) FROM accounts_payable child
+                     WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE UPPER(ap.status::text) = $3
+                WHERE {parent_filter}
+                  AND UPPER(ap.status::text) = $3
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
             """, limit, skip, status_upper)
         else:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
-                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+                    COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
+                    (SELECT MIN(child.due_date) FROM accounts_payable child
+                     WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
+                WHERE {parent_filter}
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
             """, limit, skip)
@@ -2643,6 +2656,60 @@ async def pay_account_payable(
         """, account_id, new_paid, new_balance, new_status, payment_date, datetime.utcnow())
 
         return row_to_dict(updated)
+    finally:
+        await conn.close()
+
+
+@router.get("/accounts-payable/{account_id}/installments")
+async def get_account_payable_installments(
+    account_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """
+    Retorna todas as parcelas de uma conta a pagar (conta pai).
+    Similar ao endpoint de accounts_receivable.
+    """
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca a conta pai e todas as parcelas filhas
+        rows = await conn.fetch("""
+            SELECT ap.*,
+                COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
+            FROM accounts_payable ap
+            LEFT JOIN suppliers s ON ap.supplier_id = s.id
+            WHERE ap.id = $1 OR ap.parent_id = $1
+            ORDER BY ap.installment_number
+        """, account_id)
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+
+        # Retorna apenas as parcelas (installment_number > 0)
+        # Se nao houver parcelas, retorna a conta original
+        items = []
+        for row in rows:
+            row_dict = row_to_dict(row)
+            installment_num = row_dict.get("installment_number", 0)
+
+            # Adiciona account_id para compatibilidade com frontend
+            row_dict["account_id"] = row_dict.get("parent_id") or row_dict.get("id")
+
+            # IMPORTANTE: Arredonda valores para evitar erros de ponto flutuante
+            amount = round(float(row_dict.get("amount") or 0), 2)
+            amount_paid = round(float(row_dict.get("amount_paid") or 0), 2)
+            row_dict["amount"] = amount
+            row_dict["amount_paid"] = amount_paid
+            row_dict["balance"] = round(amount - amount_paid, 2)
+
+            if installment_num > 0:
+                items.append(row_dict)
+            elif len(rows) == 1:
+                # Conta simples sem parcelas
+                items.append(row_dict)
+
+        return items
     finally:
         await conn.close()
 
