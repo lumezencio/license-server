@@ -1548,29 +1548,90 @@ async def update_account_receivable(
     account: dict,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Atualiza conta a receber"""
+    """Atualiza conta a receber com redistribuição automática de valores entre parcelas"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Converte due_date de string para date se necessário
+        due_date = account.get("due_date")
+        if isinstance(due_date, str) and due_date:
+            from datetime import datetime as dt
+            if 'T' in due_date:
+                due_date = dt.fromisoformat(due_date.replace('Z', '+00:00')).date()
+            else:
+                due_date = dt.strptime(due_date, '%Y-%m-%d').date()
+
+        # Converte payment_date de string para date se necessário
+        payment_date = account.get("payment_date")
+        if isinstance(payment_date, str) and payment_date:
+            from datetime import datetime as dt
+            if 'T' in payment_date:
+                payment_date = dt.fromisoformat(payment_date.replace('Z', '+00:00')).date()
+            else:
+                payment_date = dt.strptime(payment_date, '%Y-%m-%d').date()
+
+        # Busca dados atuais da parcela para verificar mudanças de valor
+        current = await conn.fetchrow(
+            "SELECT * FROM accounts_receivable WHERE id = $1",
+            account_id
+        )
+        if not current:
+            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+
+        new_amount = float(account.get("amount", 0))
+        old_amount = float(current["amount"] or 0)
+        amount_diff = new_amount - old_amount
+
+        # Atualiza a parcela atual
         row = await conn.fetchrow("""
             UPDATE accounts_receivable SET
                 customer_id = $2, description = $3, amount = $4, paid_amount = $5,
-                due_date = $6, status = $7, updated_at = $8
+                due_date = $6, status = $7, payment_date = $8, updated_at = $9
             WHERE id = $1
             RETURNING *
         """,
             account_id,
             account.get("customer_id"),
             account.get("description", ""),
-            float(account.get("amount", 0)),
+            new_amount,
             float(account.get("paid_amount", 0)),
-            account.get("due_date"),
+            due_date,
             account.get("status", "pending"),
+            payment_date,
             datetime.utcnow()
         )
-        if not row:
-            raise HTTPException(status_code=404, detail="Conta nao encontrada")
+
+        # Se houve alteração de valor E a parcela tem parent_id (faz parte de parcelamento)
+        # redistribui a diferença entre as parcelas restantes não pagas
+        parent_id = current.get("parent_id")
+        installment_number = current.get("installment_number") or 1
+
+        if amount_diff != 0 and parent_id:
+            # Busca parcelas futuras não pagas (status != 'PAID')
+            remaining_installments = await conn.fetch("""
+                SELECT id, amount, installment_number
+                FROM accounts_receivable
+                WHERE parent_id = $1
+                  AND installment_number > $2
+                  AND status != 'PAID'
+                ORDER BY installment_number
+            """, parent_id, installment_number)
+
+            if remaining_installments:
+                # Distribui a diferença (inverso: se pagou mais, diminui nas próximas)
+                diff_per_installment = -amount_diff / len(remaining_installments)
+
+                for inst in remaining_installments:
+                    new_inst_amount = max(0, float(inst["amount"]) + diff_per_installment)
+                    await conn.execute("""
+                        UPDATE accounts_receivable
+                        SET amount = $2, updated_at = $3
+                        WHERE id = $1
+                    """, inst["id"], new_inst_amount, datetime.utcnow())
+
+                logger.info(f"Redistribuído {-amount_diff:.2f} entre {len(remaining_installments)} parcelas restantes")
+
         return row_to_dict(row)
     finally:
         await conn.close()
