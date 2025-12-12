@@ -3378,68 +3378,100 @@ async def get_dashboard_overview(
             WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
         """) or 0
 
-        # Contas a receber - filtra para evitar duplicação de contas PAI
-        # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
-        receivable_filter = """
-            AND is_active = true
-            AND (
-                parent_id IS NOT NULL
-                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+        # Verifica se coluna parent_id existe nas tabelas (compatibilidade multi-tenant)
+        ar_has_parent = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'accounts_receivable' AND column_name = 'parent_id'
             )
-        """
-
-        # Contas a receber - pendentes
-        receivables_pending = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
-            {receivable_filter}
-        """) or 0
-
-        # Contas a receber - recebidas (mesma logica: filhas + simples)
-        receivables_received = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
-            {receivable_filter}
-        """) or 0
-
-        # Contas a receber - vencidas (mesma logica: filhas + simples)
-        receivables_overdue = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
-            AND due_date < CURRENT_DATE
-            {receivable_filter}
-        """) or 0
-
-        # Contas a pagar - filtra para evitar duplicação igual contas a receber
-        # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
-        payable_filter = """
-            AND (
-                parent_id IS NOT NULL
-                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
+        """)
+        ap_has_parent = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'accounts_payable' AND column_name = 'parent_id'
             )
-        """
+        """)
 
-        # Contas a pagar pendentes
-        payables_pending = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
-            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
-            {payable_filter}
-        """) or 0
+        # Verifica se coluna is_active existe em accounts_receivable
+        ar_has_is_active = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'accounts_receivable' AND column_name = 'is_active'
+            )
+        """)
 
-        # Contas a pagar - pagas
-        payables_paid = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
-            WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
-            {payable_filter}
-        """) or 0
+        # CONTAS A RECEBER - queries compatíveis com diferentes schemas
+        if ar_has_parent and ar_has_is_active:
+            # Schema novo com parent_id e is_active
+            receivables_pending = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                AND is_active = true
+                AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            """) or 0
+            receivables_received = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+                AND is_active = true
+                AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            """) or 0
+            receivables_overdue = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                AND due_date < CURRENT_DATE
+                AND is_active = true
+                AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            """) or 0
+        else:
+            # Schema legado sem parent_id - soma tudo
+            receivables_pending = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            """) or 0
+            receivables_received = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+            """) or 0
+            receivables_overdue = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                AND due_date < CURRENT_DATE
+            """) or 0
 
-        # Contas a pagar - vencidas
-        payables_overdue = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
-            WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
-            AND due_date < CURRENT_DATE
-            {payable_filter}
-        """) or 0
+        # CONTAS A PAGAR - queries compatíveis com diferentes schemas
+        if ap_has_parent:
+            # Schema novo com parent_id
+            payables_pending = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            """) or 0
+            payables_paid = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+                AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            """) or 0
+            payables_overdue = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                AND due_date < CURRENT_DATE
+                AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            """) or 0
+        else:
+            # Schema legado sem parent_id - soma tudo
+            payables_pending = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            """) or 0
+            payables_paid = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+            """) or 0
+            payables_overdue = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
+                WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                AND due_date < CURRENT_DATE
+            """) or 0
 
         return {
             "customers_count": customers_count,
