@@ -10,17 +10,17 @@ export default function LoadingSpinner({ size = 'md', className = '' }) {
 
   return (
     <div className={`flex items-center justify-center ${className}`}>
-      <Loader2 className={`${sizes[size]} animate-spin text-blue-400`} />
+      <Loader2 className={`${sizes[size]} animate-spin text-[var(--ds-cyan)]`} />
     </div>
   );
 }
 
 export function FullPageLoader() {
   return (
-    <div className="fixed inset-0 bg-slate-900/90 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-[var(--ds-bg-page)]/95 flex items-center justify-center z-50">
       <div className="text-center">
         <LoadingSpinner size="xl" />
-        <p className="mt-4 text-white/70 font-medium">Carregando...</p>
+        <p className="mt-4 text-[var(--ds-text-secondary)] font-medium">Carregando...</p>
       </div>
     </div>
   );

@@ -29,33 +29,33 @@ export default function Input({
   return (
     <div className={className}>
       {label && (
-        <label className="block text-sm font-semibold text-white mb-2">
+        <label className="block text-[var(--ds-font-size-xs)] font-medium text-[var(--ds-text-muted)] uppercase tracking-wide mb-1.5">
           {label}
         </label>
       )}
       <div className="relative">
         {Icon && (
-          <Icon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-white/70" />
+          <Icon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--ds-text-secondary)]" />
         )}
         <motion.input
-          whileFocus={{ scale: 1.005 }}
+          whileFocus={{ scale: 1.002 }}
           type={type}
           onChange={handleChange}
           {...props}
           style={shouldUppercase ? { textTransform: 'uppercase' } : undefined}
           className={`
-            w-full ${Icon ? 'pl-12' : 'pl-4'} pr-4 py-3
-            bg-white/10 backdrop-blur-sm border ${error ? 'border-red-400' : 'border-white/30'}
-            rounded-xl text-white font-medium placeholder-white/50
-            focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent
-            focus:bg-white/15
-            transition-all
+            w-full ${Icon ? 'pl-11' : 'pl-4'} pr-4 py-3
+            bg-[var(--ds-bg-input)] border ${error ? 'border-[var(--ds-red)]' : 'border-[var(--ds-border)]'}
+            rounded-lg text-[var(--ds-text-primary)] font-medium placeholder-[var(--ds-text-muted)]
+            focus:outline-none focus:border-[var(--ds-border-focus)] focus:ring-2 focus:ring-[var(--ds-cyan)]/20
+            hover:border-[var(--ds-border-hover)]
+            transition-all duration-200
             ${props.className || ''}
           `}
         />
       </div>
       {error && (
-        <p className="mt-1 text-sm font-semibold text-red-300">{error}</p>
+        <p className="mt-1 text-[var(--ds-font-size-xs)] font-medium text-[var(--ds-red)]">{error}</p>
       )}
     </div>
   );

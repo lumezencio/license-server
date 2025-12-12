@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Mail, Lock, Shield, LogIn } from 'lucide-react';
 import AppBackground from '../components/AppBackground';
-import Button from '../components/ui/Button';
-import Input from '../components/ui/Input';
+import { Button, Input } from '../components/ui';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function Login() {

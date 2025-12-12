@@ -5,14 +5,10 @@ import {
   Calendar, Users, Building2, CheckCircle, XCircle, Clock,
   AlertTriangle, RefreshCw, Trash2
 } from 'lucide-react';
-import Card, { CardContent, CardHeader } from '../components/ui/Card';
-import Button from '../components/ui/Button';
-import Icon3DButton from '../components/ui/Icon3DButton';
-import Input from '../components/ui/Input';
-import Select from '../components/ui/Select';
-import Badge from '../components/ui/Badge';
-import Modal from '../components/ui/Modal';
-import LoadingSpinner from '../components/ui/LoadingSpinner';
+import {
+  Card, CardContent, CardHeader, Button, Icon3DButton, Input, Select,
+  Badge, Modal, LoadingSpinner, FormSection, FormGrid, FormField, FormInput, FormTextarea, FormSelect
+} from '../components/ui';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { licensesService, clientsService } from '../services/api';
 import { format, parseISO, addDays, addMonths, addYears } from 'date-fns';
@@ -258,12 +254,12 @@ export default function Licenses() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="space-y-4 sm:space-y-6">
+      {/* Header - Responsivo */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white">Licenças</h1>
-          <p className="text-white/60 mt-1">Gerencie as licenças do sistema</p>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">Licencas</h1>
+          <p className="text-white/60 mt-1 text-sm sm:text-base">Gerencie as licencas do sistema</p>
         </div>
         <Icon3DButton
           icon={Plus}

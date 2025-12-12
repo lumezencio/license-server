@@ -4,9 +4,7 @@ import {
   Settings as SettingsIcon, Key, Shield, Server, Globe,
   Copy, Eye, EyeOff, RefreshCw, Download
 } from 'lucide-react';
-import Card, { CardContent, CardHeader } from '../components/ui/Card';
-import Button from '../components/ui/Button';
-import Badge from '../components/ui/Badge';
+import { Card, CardContent, CardHeader, Button, Badge } from '../components/ui';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function Settings() {

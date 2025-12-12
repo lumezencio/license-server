@@ -2,14 +2,12 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Users, Plus, Search, Edit2, Trash2, Building2, Mail, Phone,
-  MapPin, MoreVertical, Key, Eye
+  MapPin, Key, Eye
 } from 'lucide-react';
-import Card, { CardContent, CardHeader } from '../components/ui/Card';
-import Button from '../components/ui/Button';
-import Input from '../components/ui/Input';
-import Badge from '../components/ui/Badge';
-import Modal from '../components/ui/Modal';
-import LoadingSpinner from '../components/ui/LoadingSpinner';
+import {
+  Card, CardContent, CardHeader, Button, Input, Badge, Modal,
+  LoadingSpinner, Icon3DButton, FormSection, FormGrid, FormField, FormInput, FormTextarea
+} from '../components/ui';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { clientsService, licensesService } from '../services/api';
 import { format, parseISO } from 'date-fns';
@@ -147,21 +145,21 @@ export default function Clients() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="space-y-4 sm:space-y-6">
+      {/* Header - Responsivo */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white">Clientes</h1>
-          <p className="text-white/60 mt-1">Gerencie os clientes do sistema</p>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">Clientes</h1>
+          <p className="text-white/60 mt-1 text-sm sm:text-base">Gerencie os clientes do sistema</p>
         </div>
-        <Button icon={Plus} onClick={openNewModal}>
+        <Button icon={Plus} onClick={openNewModal} className="w-full sm:w-auto">
           Novo Cliente
         </Button>
       </div>
 
-      {/* Search */}
+      {/* Search - Responsivo */}
       <Card hover={false}>
-        <CardContent className="py-4">
+        <CardContent className="py-3 sm:py-4">
           <Input
             icon={Search}
             placeholder="Buscar por nome, email ou documento..."
@@ -171,250 +169,280 @@ export default function Clients() {
         </CardContent>
       </Card>
 
-      {/* Table */}
+      {/* Table - Responsivo */}
       <Card hover={false}>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Cliente</TableHead>
-                <TableHead>Documento</TableHead>
-                <TableHead>Contato</TableHead>
-                <TableHead>Licenças</TableHead>
-                <TableHead>Cadastro</TableHead>
-                <TableHead className="text-right">Ações</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredClients.map((client) => {
-                const clientLicenses = getClientLicenses(client.id);
-                const activeLicenses = clientLicenses.filter(l => l.status === 'active').length;
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Cliente</TableHead>
+                  <TableHead className="hidden sm:table-cell">Documento</TableHead>
+                  <TableHead className="hidden md:table-cell">Contato</TableHead>
+                  <TableHead>Licencas</TableHead>
+                  <TableHead className="hidden lg:table-cell">Cadastro</TableHead>
+                  <TableHead className="text-right">Acoes</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredClients.map((client) => {
+                  const clientLicenses = getClientLicenses(client.id);
+                  const activeLicenses = clientLicenses.filter(l => l.status === 'active').length;
 
-                return (
-                  <TableRow key={client.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-                          <Building2 className="w-5 h-5 text-white" />
+                  return (
+                    <TableRow key={client.id}>
+                      <TableCell>
+                        <div className="flex items-center gap-2 sm:gap-3">
+                          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                            <Building2 className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-white text-sm sm:text-base truncate">{client.name}</p>
+                            <p className="text-xs sm:text-sm text-white/50 truncate">{client.email}</p>
+                          </div>
                         </div>
+                      </TableCell>
+                      <TableCell className="hidden sm:table-cell">
+                        <span className="font-mono text-white/70 text-xs sm:text-sm">{client.document || '-'}</span>
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell">
                         <div>
-                          <p className="font-semibold text-white">{client.name}</p>
-                          <p className="text-sm text-white/50">{client.email}</p>
+                          <p className="text-white/70 text-sm">{client.contact_name || '-'}</p>
+                          <p className="text-xs text-white/50">{client.phone || '-'}</p>
                         </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-mono text-white/70">{client.document || '-'}</span>
-                    </TableCell>
-                    <TableCell>
-                      <div>
-                        <p className="text-white/70">{client.contact_name || '-'}</p>
-                        <p className="text-sm text-white/50">{client.phone || '-'}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={activeLicenses > 0 ? 'success' : 'default'}>
-                          {activeLicenses} ativa{activeLicenses !== 1 ? 's' : ''}
-                        </Badge>
-                        {clientLicenses.length > activeLicenses && (
-                          <Badge variant="default">
-                            +{clientLicenses.length - activeLicenses}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+                          <Badge variant={activeLicenses > 0 ? 'success' : 'default'} size="sm">
+                            {activeLicenses} ativa{activeLicenses !== 1 ? 's' : ''}
                           </Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-white/70">
-                        {client.created_at
-                          ? format(parseISO(client.created_at), "dd/MM/yyyy", { locale: ptBR })
-                          : '-'
-                        }
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          icon={Eye}
-                          onClick={() => openViewModal(client)}
-                        />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          icon={Edit2}
-                          onClick={() => openEditModal(client)}
-                        />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          icon={Trash2}
-                          onClick={() => handleDelete(client)}
-                          className="hover:text-red-400"
-                        />
-                      </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="hidden lg:table-cell">
+                        <span className="text-white/70 text-sm">
+                          {client.created_at
+                            ? format(parseISO(client.created_at), "dd/MM/yyyy", { locale: ptBR })
+                            : '-'
+                          }
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-1 sm:gap-2">
+                          <Icon3DButton
+                            icon={Eye}
+                            variant="cyan"
+                            size="iconOnly"
+                            onClick={() => openViewModal(client)}
+                          />
+                          <Icon3DButton
+                            icon={Edit2}
+                            variant="primary"
+                            size="iconOnly"
+                            onClick={() => openEditModal(client)}
+                          />
+                          <Icon3DButton
+                            icon={Trash2}
+                            variant="danger"
+                            size="iconOnly"
+                            onClick={() => handleDelete(client)}
+                          />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {filteredClients.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-white/50">
+                      {searchTerm ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
                     </TableCell>
                   </TableRow>
-                );
-              })}
-              {filteredClients.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-white/50">
-                    {searchTerm ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Create/Edit Modal */}
+      {/* Create/Edit Modal - Responsivo */}
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={editingClient ? 'Editar Cliente' : 'Novo Cliente'}
         size="lg"
+        icon={Building2}
       >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="Nome da Empresa *"
-              icon={Building2}
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              required
-              className="md:col-span-2"
-            />
+        <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
+          <FormSection title="Dados da Empresa" icon={Building2}>
+            <FormGrid cols={2}>
+              <FormField label="Nome da Empresa" required className="col-span-2 sm:col-span-2">
+                <FormInput
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value.toUpperCase() })}
+                  placeholder="Digite o nome da empresa"
+                  required
+                />
+              </FormField>
 
-            <Input
-              label="Email *"
-              type="email"
-              icon={Mail}
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              required
-            />
+              <FormField label="Email" required>
+                <FormInput
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  placeholder="email@empresa.com"
+                  required
+                />
+              </FormField>
 
-            <Input
-              label="CNPJ/CPF"
-              value={formData.document}
-              onChange={(e) => setFormData({ ...formData, document: e.target.value })}
-            />
+              <FormField label="CNPJ/CPF">
+                <FormInput
+                  value={formData.document}
+                  onChange={(e) => setFormData({ ...formData, document: e.target.value })}
+                  placeholder="00.000.000/0000-00"
+                />
+              </FormField>
+            </FormGrid>
+          </FormSection>
 
-            <Input
-              label="Pessoa de Contato"
-              value={formData.contact_name}
-              onChange={(e) => setFormData({ ...formData, contact_name: e.target.value })}
-            />
+          <FormSection title="Contato" icon={Phone}>
+            <FormGrid cols={2}>
+              <FormField label="Pessoa de Contato">
+                <FormInput
+                  value={formData.contact_name}
+                  onChange={(e) => setFormData({ ...formData, contact_name: e.target.value.toUpperCase() })}
+                  placeholder="Nome do responsavel"
+                />
+              </FormField>
 
-            <Input
-              label="Telefone"
-              icon={Phone}
-              value={formData.phone}
-              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-            />
+              <FormField label="Telefone">
+                <FormInput
+                  value={formData.phone}
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  placeholder="(00) 00000-0000"
+                />
+              </FormField>
+            </FormGrid>
+          </FormSection>
 
-            <Input
-              label="Endereço"
-              icon={MapPin}
-              value={formData.address}
-              onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-              className="md:col-span-2"
-            />
+          <FormSection title="Endereco" icon={MapPin}>
+            <FormGrid cols={1}>
+              <FormField label="Endereco">
+                <FormInput
+                  value={formData.address}
+                  onChange={(e) => setFormData({ ...formData, address: e.target.value.toUpperCase() })}
+                  placeholder="Rua, numero, complemento"
+                />
+              </FormField>
+            </FormGrid>
+            <FormGrid cols={3} className="mt-4">
+              <FormField label="Cidade">
+                <FormInput
+                  value={formData.city}
+                  onChange={(e) => setFormData({ ...formData, city: e.target.value.toUpperCase() })}
+                  placeholder="Cidade"
+                />
+              </FormField>
 
-            <Input
-              label="Cidade"
-              value={formData.city}
-              onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-            />
+              <FormField label="Estado">
+                <FormInput
+                  value={formData.state}
+                  onChange={(e) => setFormData({ ...formData, state: e.target.value.toUpperCase() })}
+                  placeholder="UF"
+                  maxLength={2}
+                />
+              </FormField>
 
-            <Input
-              label="Estado"
-              value={formData.state}
-              onChange={(e) => setFormData({ ...formData, state: e.target.value })}
-              maxLength={2}
-            />
-          </div>
+              <FormField label="Pais">
+                <FormInput
+                  value={formData.country}
+                  onChange={(e) => setFormData({ ...formData, country: e.target.value.toUpperCase() })}
+                  placeholder="Pais"
+                />
+              </FormField>
+            </FormGrid>
+          </FormSection>
 
-          <div>
-            <label className="block text-sm font-semibold text-white mb-2">Observações</label>
-            <textarea
-              value={formData.notes}
-              onChange={(e) => setFormData({ ...formData, notes: e.target.value.toUpperCase() })}
-              rows={3}
-              style={{ textTransform: 'uppercase' }}
-              className="w-full px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
-          </div>
+          <FormSection title="Observacoes">
+            <FormField label="Notas">
+              <FormTextarea
+                value={formData.notes}
+                onChange={(e) => setFormData({ ...formData, notes: e.target.value.toUpperCase() })}
+                placeholder="Observacoes sobre o cliente"
+                rows={3}
+              />
+            </FormField>
+          </FormSection>
 
-          <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
-            <Button variant="ghost" type="button" onClick={() => setIsModalOpen(false)}>
+          {/* Footer - Responsivo */}
+          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 sm:gap-3 pt-4 border-t border-white/10">
+            <Button variant="ghost" type="button" onClick={() => setIsModalOpen(false)} className="w-full sm:w-auto">
               Cancelar
             </Button>
-            <Button type="submit" loading={saving}>
-              {editingClient ? 'Salvar Alterações' : 'Criar Cliente'}
+            <Button type="submit" loading={saving} className="w-full sm:w-auto">
+              {editingClient ? 'Salvar Alteracoes' : 'Criar Cliente'}
             </Button>
           </div>
         </form>
       </Modal>
 
-      {/* View Modal */}
+      {/* View Modal - Responsivo */}
       <Modal
         isOpen={isViewModalOpen}
         onClose={() => setIsViewModalOpen(false)}
         title="Detalhes do Cliente"
         size="lg"
+        icon={Eye}
       >
         {viewingClient && (
-          <div className="space-y-6">
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-                <Building2 className="w-8 h-8 text-white" />
+          <div className="space-y-4 sm:space-y-6">
+            {/* Header do cliente */}
+            <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 text-center sm:text-left">
+              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl sm:rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                <Building2 className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
               </div>
-              <div>
-                <h3 className="text-2xl font-bold text-white">{viewingClient.name}</h3>
-                <p className="text-white/60">{viewingClient.email}</p>
+              <div className="min-w-0">
+                <h3 className="text-xl sm:text-2xl font-bold text-white truncate">{viewingClient.name}</h3>
+                <p className="text-white/60 text-sm sm:text-base truncate">{viewingClient.email}</p>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-white/5 rounded-xl p-4">
-                <p className="text-white/50 text-sm">Documento</p>
-                <p className="text-white font-mono mt-1">{viewingClient.document || '-'}</p>
+            {/* Grid de informacoes - Responsivo */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+              <div className="bg-white/5 rounded-lg sm:rounded-xl p-3 sm:p-4">
+                <p className="text-white/50 text-xs sm:text-sm">Documento</p>
+                <p className="text-white font-mono mt-1 text-sm sm:text-base">{viewingClient.document || '-'}</p>
               </div>
-              <div className="bg-white/5 rounded-xl p-4">
-                <p className="text-white/50 text-sm">Telefone</p>
-                <p className="text-white mt-1">{viewingClient.phone || '-'}</p>
+              <div className="bg-white/5 rounded-lg sm:rounded-xl p-3 sm:p-4">
+                <p className="text-white/50 text-xs sm:text-sm">Telefone</p>
+                <p className="text-white mt-1 text-sm sm:text-base">{viewingClient.phone || '-'}</p>
               </div>
-              <div className="bg-white/5 rounded-xl p-4">
-                <p className="text-white/50 text-sm">Contato</p>
-                <p className="text-white mt-1">{viewingClient.contact_name || '-'}</p>
+              <div className="bg-white/5 rounded-lg sm:rounded-xl p-3 sm:p-4">
+                <p className="text-white/50 text-xs sm:text-sm">Contato</p>
+                <p className="text-white mt-1 text-sm sm:text-base">{viewingClient.contact_name || '-'}</p>
               </div>
-              <div className="bg-white/5 rounded-xl p-4">
-                <p className="text-white/50 text-sm">Localização</p>
-                <p className="text-white mt-1">
+              <div className="bg-white/5 rounded-lg sm:rounded-xl p-3 sm:p-4">
+                <p className="text-white/50 text-xs sm:text-sm">Localizacao</p>
+                <p className="text-white mt-1 text-sm sm:text-base">
                   {viewingClient.city ? `${viewingClient.city}/${viewingClient.state}` : '-'}
                 </p>
               </div>
             </div>
 
-            {/* Licenças do Cliente */}
+            {/* Licencas do Cliente */}
             <div>
-              <h4 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                <Key className="w-5 h-5 text-amber-400" />
-                Licenças
+              <h4 className="text-base sm:text-lg font-semibold text-white mb-3 sm:mb-4 flex items-center gap-2">
+                <Key className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400" />
+                Licencas
               </h4>
-              <div className="space-y-3">
+              <div className="space-y-2 sm:space-y-3">
                 {getClientLicenses(viewingClient.id).map((license) => (
                   <div
                     key={license.id}
-                    className="bg-white/5 rounded-xl p-4 flex items-center justify-between"
+                    className="bg-white/5 rounded-lg sm:rounded-xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                   >
-                    <div>
-                      <code className="text-blue-400 font-mono">{license.license_key}</code>
-                      <div className="flex items-center gap-2 mt-1">
+                    <div className="min-w-0">
+                      <code className="text-blue-400 font-mono text-xs sm:text-sm break-all">{license.license_key}</code>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <Badge variant="info" size="sm">{license.plan}</Badge>
                         <Badge
                           variant={
@@ -428,7 +456,7 @@ export default function Clients() {
                         </Badge>
                       </div>
                     </div>
-                    <div className="text-right text-sm">
+                    <div className="text-left sm:text-right text-xs sm:text-sm">
                       <p className="text-white/50">Expira em</p>
                       <p className="text-white">
                         {license.expires_at
@@ -440,7 +468,7 @@ export default function Clients() {
                   </div>
                 ))}
                 {getClientLicenses(viewingClient.id).length === 0 && (
-                  <p className="text-white/50 text-center py-4">Nenhuma licença</p>
+                  <p className="text-white/50 text-center py-4 text-sm">Nenhuma licenca</p>
                 )}
               </div>
             </div>

@@ -10,14 +10,14 @@ export function Table({ children, className = '' }) {
 
 export function TableHeader({ children }) {
   return (
-    <thead className="bg-white/5 border-b border-white/10">
+    <thead className="bg-[var(--ds-cyan)]/5 border-b border-[var(--ds-border)]">
       {children}
     </thead>
   );
 }
 
 export function TableBody({ children }) {
-  return <tbody className="divide-y divide-white/5">{children}</tbody>;
+  return <tbody className="divide-y divide-[var(--ds-border)]">{children}</tbody>;
 }
 
 export function TableRow({ children, className = '', onClick }) {
@@ -25,7 +25,7 @@ export function TableRow({ children, className = '', onClick }) {
     <tr
       onClick={onClick}
       className={`
-        hover:bg-white/5 transition-colors
+        hover:bg-[var(--ds-cyan)]/5 transition-colors
         ${onClick ? 'cursor-pointer' : ''}
         ${className}
       `}
@@ -37,7 +37,7 @@ export function TableRow({ children, className = '', onClick }) {
 
 export function TableHead({ children, className = '' }) {
   return (
-    <th className={`px-4 py-3 text-left text-sm font-semibold text-white/70 uppercase tracking-wider ${className}`}>
+    <th className={`px-4 py-3 text-left text-[11px] font-semibold text-[var(--ds-cyan)] uppercase tracking-wider ${className}`}>
       {children}
     </th>
   );
@@ -45,7 +45,7 @@ export function TableHead({ children, className = '' }) {
 
 export function TableCell({ children, className = '' }) {
   return (
-    <td className={`px-4 py-4 text-sm text-white ${className}`}>
+    <td className={`px-4 py-3 text-sm text-[var(--ds-text-primary)] ${className}`}>
       {children}
     </td>
   );

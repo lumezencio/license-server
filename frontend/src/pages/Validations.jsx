@@ -4,12 +4,7 @@ import {
   History, Search, CheckCircle, XCircle, Monitor, Globe,
   Calendar, Filter, RefreshCw
 } from 'lucide-react';
-import Card, { CardContent, CardHeader } from '../components/ui/Card';
-import Button from '../components/ui/Button';
-import Input from '../components/ui/Input';
-import Select from '../components/ui/Select';
-import Badge from '../components/ui/Badge';
-import LoadingSpinner from '../components/ui/LoadingSpinner';
+import { Card, CardContent, CardHeader, Button, Input, Select, Badge, LoadingSpinner, StatCard } from '../components/ui';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { licensesService, clientsService } from '../services/api';
 import { format, parseISO } from 'date-fns';

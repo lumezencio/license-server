@@ -1597,7 +1597,7 @@ async def update_account_receivable(
             new_amount,
             float(account.get("paid_amount", 0)),
             due_date,
-            account.get("status", "pending"),
+            (account.get("status") or "PENDING").upper(),  # ENUM requer MAIÚSCULO
             payment_date,
             datetime.utcnow()
         )
@@ -2297,7 +2297,7 @@ async def create_account_payable(
             due_date,
             account.get("category", "suppliers"),
             account.get("payment_method", "bank_transfer"),
-            account.get("status", "pending")
+            (account.get("status") or "PENDING").upper()  # ENUM requer MAIÚSCULO
         )
         return row_to_dict(row)
     finally:
@@ -2343,7 +2343,7 @@ async def update_account_payable(
             due_date,
             account.get("category", "suppliers"),
             account.get("payment_method", "bank_transfer"),
-            account.get("status", "pending"),
+            (account.get("status") or "PENDING").upper(),  # ENUM requer MAIÚSCULO
             datetime.utcnow()
         )
         if not row:
@@ -2394,8 +2394,8 @@ async def pay_account_payable(
         new_paid = current_paid + payment_amount
         new_balance = total_amount - new_paid
 
-        # Determina novo status
-        new_status = "paid" if new_paid >= total_amount else "partial"
+        # Determina novo status (MAIÚSCULO para ENUM PostgreSQL)
+        new_status = "PAID" if new_paid >= total_amount else "PARTIAL"
 
         # Converte payment_date para date se for string
         payment_date = payment.get("payment_date")

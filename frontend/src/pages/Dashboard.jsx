@@ -5,14 +5,11 @@ import {
   TrendingUp, Calendar, Activity, Shield
 } from 'lucide-react';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell
+  ResponsiveContainer, PieChart, Pie, Cell, Tooltip
 } from 'recharts';
-import Card, { CardContent, CardHeader } from '../components/ui/Card';
-import Badge from '../components/ui/Badge';
-import LoadingSpinner from '../components/ui/LoadingSpinner';
+import { Card, CardContent, CardHeader, Badge, LoadingSpinner, StatCard } from '../components/ui';
 import { statsService, licensesService, clientsService } from '../services/api';
-import { format, parseISO, subDays } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
 const COLORS = ['#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#6b7280'];
@@ -37,7 +34,7 @@ export default function Dashboard() {
       setLicenses(licensesData);
       setClients(clientsData);
 
-      // Calcula estatísticas
+      // Calcula estatisticas
       const now = new Date();
       const activeCount = licensesData.filter(l => l.status === 'active').length;
       const expiredCount = licensesData.filter(l => l.status === 'expired').length;
@@ -84,37 +81,6 @@ export default function Dashboard() {
     );
   }
 
-  const statCards = [
-    {
-      title: 'Total de Clientes',
-      value: stats?.totalClients || 0,
-      icon: Users,
-      color: 'from-blue-500 to-cyan-500',
-      shadowColor: 'shadow-blue-500/30',
-    },
-    {
-      title: 'Licenças Ativas',
-      value: stats?.activeLicenses || 0,
-      icon: CheckCircle,
-      color: 'from-green-500 to-emerald-500',
-      shadowColor: 'shadow-green-500/30',
-    },
-    {
-      title: 'Expirando em 30 dias',
-      value: stats?.expiringSoon || 0,
-      icon: AlertTriangle,
-      color: 'from-amber-500 to-orange-500',
-      shadowColor: 'shadow-amber-500/30',
-    },
-    {
-      title: 'Total de Licenças',
-      value: stats?.totalLicenses || 0,
-      icon: Key,
-      color: 'from-purple-500 to-violet-500',
-      shadowColor: 'shadow-purple-500/30',
-    },
-  ];
-
   const getStatusVariant = (status) => {
     const variants = {
       active: 'success',
@@ -148,41 +114,43 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-white">Dashboard</h1>
-        <p className="text-white/60 mt-1">Visão geral do sistema de licenças</p>
+        <h1 className="text-2xl sm:text-3xl font-bold text-white">Dashboard</h1>
+        <p className="text-white/60 mt-1 text-sm sm:text-base">Visao geral do sistema de licencas</p>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {statCards.map((card, index) => (
-          <motion.div
-            key={card.title}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-          >
-            <Card hover={false} className="relative overflow-hidden">
-              <CardContent>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-white/60 text-sm font-medium">{card.title}</p>
-                    <p className="text-4xl font-bold text-white mt-2">{card.value}</p>
-                  </div>
-                  <div className={`p-3 rounded-xl bg-gradient-to-br ${card.color} ${card.shadowColor} shadow-lg`}>
-                    <card.icon className="w-6 h-6 text-white" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        ))}
+      {/* Stats Cards - Responsivo */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+        <StatCard
+          icon={Users}
+          label="Total de Clientes"
+          value={stats?.totalClients || 0}
+          variant="blue"
+        />
+        <StatCard
+          icon={CheckCircle}
+          label="Licencas Ativas"
+          value={stats?.activeLicenses || 0}
+          variant="green"
+        />
+        <StatCard
+          icon={AlertTriangle}
+          label="Expirando em 30 dias"
+          value={stats?.expiringSoon || 0}
+          variant="yellow"
+        />
+        <StatCard
+          icon={Key}
+          label="Total de Licencas"
+          value={stats?.totalLicenses || 0}
+          variant="purple"
+        />
       </div>
 
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Charts Row - Responsivo */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Status Distribution */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -191,23 +159,23 @@ export default function Dashboard() {
         >
           <Card hover={false}>
             <CardHeader>
-              <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Activity className="w-5 h-5 text-blue-400" />
-                Distribuição de Status
+              <h3 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
+                <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400" />
+                Distribuicao de Status
               </h3>
             </CardHeader>
             <CardContent>
               {stats?.statusDistribution?.length > 0 ? (
-                <div className="flex items-center gap-8">
-                  <div className="w-48 h-48">
+                <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-8">
+                  <div className="w-36 h-36 sm:w-48 sm:h-48">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
                         <Pie
                           data={stats.statusDistribution}
                           cx="50%"
                           cy="50%"
-                          innerRadius={50}
-                          outerRadius={80}
+                          innerRadius={40}
+                          outerRadius={60}
                           paddingAngle={2}
                           dataKey="value"
                         >
@@ -226,14 +194,14 @@ export default function Dashboard() {
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
-                  <div className="flex-1 space-y-3">
+                  <div className="flex-1 space-y-2 sm:space-y-3 w-full">
                     {stats.statusDistribution.map((item) => (
                       <div key={item.name} className="flex items-center gap-3">
                         <div
-                          className="w-3 h-3 rounded-full"
+                          className="w-3 h-3 rounded-full flex-shrink-0"
                           style={{ backgroundColor: item.color }}
                         />
-                        <span className="text-white/70 flex-1">{item.name}</span>
+                        <span className="text-white/70 flex-1 text-sm sm:text-base">{item.name}</span>
                         <span className="text-white font-semibold">{item.value}</span>
                       </div>
                     ))}
@@ -241,7 +209,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="text-center py-8 text-white/50">
-                  Nenhuma licença cadastrada
+                  Nenhuma licenca cadastrada
                 </div>
               )}
             </CardContent>
@@ -256,13 +224,13 @@ export default function Dashboard() {
         >
           <Card hover={false}>
             <CardHeader>
-              <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Shield className="w-5 h-5 text-purple-400" />
-                Licenças por Plano
+              <h3 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
+                <Shield className="w-4 h-4 sm:w-5 sm:h-5 text-purple-400" />
+                Licencas por Plano
               </h3>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
+              <div className="space-y-3 sm:space-y-4">
                 {['starter', 'professional', 'enterprise', 'unlimited'].map((plan) => {
                   const count = licenses.filter(l => l.plan === plan).length;
                   const percentage = licenses.length > 0 ? (count / licenses.length) * 100 : 0;
@@ -275,7 +243,7 @@ export default function Dashboard() {
 
                   return (
                     <div key={plan}>
-                      <div className="flex justify-between text-sm mb-1">
+                      <div className="flex justify-between text-xs sm:text-sm mb-1">
                         <span className="text-white/70 capitalize">{getPlanLabel(plan)}</span>
                         <span className="text-white font-medium">{count}</span>
                       </div>
@@ -296,7 +264,7 @@ export default function Dashboard() {
         </motion.div>
       </div>
 
-      {/* Recent Licenses */}
+      {/* Recent Licenses - Responsivo */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -304,21 +272,21 @@ export default function Dashboard() {
       >
         <Card hover={false}>
           <CardHeader>
-            <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Key className="w-5 h-5 text-amber-400" />
-              Licenças Recentes
+            <h3 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
+              <Key className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400" />
+              Licencas Recentes
             </h3>
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full min-w-[600px]">
                 <thead className="bg-white/5 border-b border-white/10">
                   <tr>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-white/70">Chave</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-white/70">Cliente</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-white/70">Plano</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-white/70">Status</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-white/70">Expira em</th>
+                    <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold text-white/70">Chave</th>
+                    <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold text-white/70">Cliente</th>
+                    <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold text-white/70">Plano</th>
+                    <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold text-white/70">Status</th>
+                    <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold text-white/70">Expira em</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -329,27 +297,27 @@ export default function Dashboard() {
 
                     return (
                       <tr key={license.id} className="hover:bg-white/5 transition-colors">
-                        <td className="px-6 py-4">
-                          <code className="text-blue-400 font-mono text-sm">{license.license_key}</code>
+                        <td className="px-3 sm:px-6 py-3 sm:py-4">
+                          <code className="text-blue-400 font-mono text-xs sm:text-sm">{license.license_key}</code>
                         </td>
-                        <td className="px-6 py-4 text-white">
+                        <td className="px-3 sm:px-6 py-3 sm:py-4 text-white text-xs sm:text-sm">
                           {client?.name || '-'}
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-3 sm:px-6 py-3 sm:py-4">
                           <Badge variant="info" size="sm">
                             {getPlanLabel(license.plan)}
                           </Badge>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-3 sm:px-6 py-3 sm:py-4">
                           <Badge variant={getStatusVariant(license.status)} size="sm">
                             {getStatusLabel(license.status)}
                           </Badge>
                         </td>
-                        <td className="px-6 py-4 text-white/70">
+                        <td className="px-3 sm:px-6 py-3 sm:py-4 text-white/70 text-xs sm:text-sm">
                           {expiresAt ? (
                             <span className={daysLeft <= 30 ? 'text-amber-400' : ''}>
                               {format(expiresAt, "dd/MM/yyyy", { locale: ptBR })}
-                              {daysLeft > 0 && ` (${daysLeft} dias)`}
+                              {daysLeft > 0 && ` (${daysLeft}d)`}
                             </span>
                           ) : '-'}
                         </td>
@@ -359,7 +327,7 @@ export default function Dashboard() {
                   {licenses.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-6 py-8 text-center text-white/50">
-                        Nenhuma licença cadastrada
+                        Nenhuma licenca cadastrada
                       </td>
                     </tr>
                   )}
