@@ -1187,7 +1187,7 @@ async def get_dashboard_stats(
 
         # Contas a pagar pendentes - schema legado usa amount_paid em vez de paid_amount
         payables = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING')
         """)
 
@@ -1256,6 +1256,220 @@ async def list_purchases(
         """, limit, skip)
 
         return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+@router.post("/purchases")
+@router.post("/purchases/")
+async def create_purchase(
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria uma nova compra com itens e contas a pagar"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        data = await request.json()
+        purchase_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        # Gera número da compra se não fornecido
+        purchase_number = data.get("purchase_number")
+        if not purchase_number:
+            count = await conn.fetchval("SELECT COUNT(*) FROM purchases") or 0
+            purchase_number = f"CMP{count + 1:06d}"
+
+        # Converte datas
+        def parse_date(val):
+            if not val or val == '' or val == 'null':
+                return None
+            if isinstance(val, str):
+                from datetime import datetime as dt
+                if 'T' in val:
+                    return dt.fromisoformat(val.replace('Z', '+00:00')).date()
+                return dt.strptime(val, '%Y-%m-%d').date()
+            return val
+
+        purchase_date = parse_date(data.get("purchase_date")) or now.date()
+        invoice_date = parse_date(data.get("invoice_date"))
+        delivery_date = parse_date(data.get("delivery_date"))
+        expected_delivery_date = parse_date(data.get("expected_delivery_date"))
+
+        # Calcula valores
+        subtotal = to_decimal(data.get("subtotal")) or 0
+        discount_amount = to_decimal(data.get("discount_amount")) or 0
+        freight_amount = to_decimal(data.get("freight_amount")) or 0
+        insurance_amount = to_decimal(data.get("insurance_amount")) or 0
+        other_expenses = to_decimal(data.get("other_expenses")) or 0
+        tax_amount = to_decimal(data.get("tax_amount")) or 0
+        total_amount = to_decimal(data.get("total_amount")) or (subtotal - discount_amount + freight_amount + insurance_amount + other_expenses + tax_amount)
+
+        # Insere a compra
+        await conn.execute("""
+            INSERT INTO purchases (
+                id, purchase_number, supplier_id, invoice_number, invoice_series,
+                invoice_key, invoice_date, purchase_date, delivery_date, expected_delivery_date,
+                subtotal, discount_amount, freight_amount, insurance_amount, other_expenses,
+                tax_amount, total_amount, payment_method, payment_terms, installments,
+                status, notes, internal_notes, stock_updated, accounts_payable_created,
+                cfop, nature_operation, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                $21, $22, $23, $24, $25, $26, $27, $28, $29
+            )
+        """,
+            purchase_id, purchase_number, to_str(data.get("supplier_id")),
+            to_str(data.get("invoice_number")), to_str(data.get("invoice_series")),
+            to_str(data.get("invoice_key")), invoice_date, purchase_date,
+            delivery_date, expected_delivery_date,
+            subtotal, discount_amount, freight_amount, insurance_amount, other_expenses,
+            tax_amount, total_amount, to_str(data.get("payment_method")),
+            to_str(data.get("payment_terms")), to_int(data.get("installments")) or 1,
+            to_str(data.get("status")) or "PENDING", to_str(data.get("notes")),
+            to_str(data.get("internal_notes")), False, False,
+            to_str(data.get("cfop")), to_str(data.get("nature_operation")),
+            now, now
+        )
+
+        # Insere itens da compra se houver
+        items = data.get("items", [])
+        for idx, item in enumerate(items):
+            item_id = str(uuid.uuid4())
+            await conn.execute("""
+                INSERT INTO purchase_items (
+                    id, purchase_id, product_id, item_number, description,
+                    quantity, quantity_received, unit_of_measure,
+                    unit_price, discount_percent, discount_amount, subtotal, total,
+                    icms_percent, ipi_percent, batch_number,
+                    manufacturing_date, expiration_date, ncm, cfop, notes,
+                    stock_updated, created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+                )
+            """,
+                item_id, purchase_id, to_str(item.get("product_id")),
+                idx + 1, to_str(item.get("description")),
+                to_decimal(item.get("quantity")) or 1, to_decimal(item.get("quantity_received")) or 0,
+                to_str(item.get("unit_of_measure")) or "UN",
+                to_decimal(item.get("unit_price")) or 0, to_decimal(item.get("discount_percent")) or 0,
+                to_decimal(item.get("discount_amount")) or 0, to_decimal(item.get("subtotal")) or 0,
+                to_decimal(item.get("total")) or 0, to_decimal(item.get("icms_percent")) or 0,
+                to_decimal(item.get("ipi_percent")) or 0, to_str(item.get("batch_number")),
+                parse_date(item.get("manufacturing_date")), parse_date(item.get("expiration_date")),
+                to_str(item.get("ncm")), to_str(item.get("cfop")), to_str(item.get("notes")),
+                False, now, now
+            )
+
+        # Cria contas a pagar se solicitado
+        create_payable = data.get("create_accounts_payable", False)
+        if create_payable and total_amount > 0:
+            num_installments = to_int(data.get("installments")) or 1
+            supplier_id = to_str(data.get("supplier_id"))
+
+            # Busca nome do fornecedor
+            supplier_name = None
+            if supplier_id:
+                supplier_row = await conn.fetchrow(
+                    "SELECT COALESCE(company_name, trade_name, name) as name FROM suppliers WHERE id = $1",
+                    supplier_id
+                )
+                if supplier_row:
+                    supplier_name = supplier_row["name"]
+
+            if num_installments == 1:
+                # Parcela única
+                payable_id = str(uuid.uuid4())
+                await conn.execute("""
+                    INSERT INTO accounts_payable (
+                        id, supplier_id, purchase_id, parent_id, supplier,
+                        description, document_number, amount, amount_paid, balance,
+                        issue_date, due_date, payment_date, status, payment_method,
+                        category, installment_number, total_installments, notes,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                    )
+                """,
+                    payable_id, supplier_id, purchase_id, None, supplier_name,
+                    f"Compra {purchase_number}", to_str(data.get("invoice_number")),
+                    total_amount, 0.0, total_amount,
+                    purchase_date, purchase_date, None, "PENDING", to_str(data.get("payment_method")),
+                    "COMPRAS", 0, 1, to_str(data.get("notes")),
+                    now, now
+                )
+            else:
+                # Múltiplas parcelas
+                parent_id = str(uuid.uuid4())
+                installment_amount = round(total_amount / num_installments, 2)
+                last_installment_amount = round(total_amount - (installment_amount * (num_installments - 1)), 2)
+
+                # Cria registro pai
+                await conn.execute("""
+                    INSERT INTO accounts_payable (
+                        id, supplier_id, purchase_id, parent_id, supplier,
+                        description, document_number, amount, amount_paid, balance,
+                        issue_date, due_date, payment_date, status, payment_method,
+                        category, installment_number, total_installments, notes,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                    )
+                """,
+                    parent_id, supplier_id, purchase_id, None, supplier_name,
+                    f"Compra {purchase_number}", to_str(data.get("invoice_number")),
+                    total_amount, 0.0, total_amount,
+                    purchase_date, purchase_date, None, "PENDING", to_str(data.get("payment_method")),
+                    "COMPRAS", 0, num_installments, to_str(data.get("notes")),
+                    now, now
+                )
+
+                # Cria parcelas filhas
+                from datetime import timedelta
+                for i in range(1, num_installments + 1):
+                    child_id = str(uuid.uuid4())
+                    due = purchase_date + timedelta(days=30 * i)
+                    amount = round(last_installment_amount if i == num_installments else installment_amount, 2)
+
+                    await conn.execute("""
+                        INSERT INTO accounts_payable (
+                            id, supplier_id, purchase_id, parent_id, supplier,
+                            description, document_number, amount, amount_paid, balance,
+                            issue_date, due_date, payment_date, status, payment_method,
+                            category, installment_number, total_installments, notes,
+                            created_at, updated_at
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                        )
+                    """,
+                        child_id, supplier_id, purchase_id, parent_id, supplier_name,
+                        f"Compra {purchase_number} - Parcela {i}/{num_installments}",
+                        to_str(data.get("invoice_number")),
+                        amount, 0.0, amount,
+                        purchase_date, due, None, "PENDING", to_str(data.get("payment_method")),
+                        "COMPRAS", i, num_installments, to_str(data.get("notes")),
+                        now, now
+                    )
+
+            # Marca que contas a pagar foram criadas
+            await conn.execute(
+                "UPDATE purchases SET accounts_payable_created = TRUE WHERE id = $1",
+                purchase_id
+            )
+
+        return {"id": purchase_id, "purchase_number": purchase_number, "message": "Compra criada com sucesso"}
+
+    except Exception as e:
+        print(f"[PURCHASE] Erro ao criar compra: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await conn.close()
 
@@ -3231,14 +3445,14 @@ async def get_accounts_payable_detailed(
 
         # Valores
         total_amount = float(await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
-        paid_amount = float(await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
+        paid_amount = float(await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
         balance = float(await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """) or 0)
         overdue_amount = float(await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date < $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, today) or 0)
@@ -3250,7 +3464,7 @@ async def get_accounts_payable_detailed(
             AND due_date = $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, today) or 0
         due_today_amount = float(await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date = $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, today) or 0)
@@ -3261,7 +3475,7 @@ async def get_accounts_payable_detailed(
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, today, week_later) or 0
         due_week_amount = float(await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, today, week_later) or 0)
@@ -3272,7 +3486,7 @@ async def get_accounts_payable_detailed(
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, month_start, month_end) or 0
         due_month_amount = float(await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
         """, month_start, month_end) or 0)
@@ -3788,7 +4002,7 @@ async def get_reports_cash_flow(
 
         # Saidas (pagamentos)
         saidas = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {date_filter_ap}
         """, *params_ap) or 0
 
@@ -3800,7 +4014,7 @@ async def get_reports_cash_flow(
 
         # Previsao de saidas
         previsao_saidas = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {date_filter_ap}
         """, *params_ap) or 0
 
@@ -3970,7 +4184,7 @@ async def get_reports_forecast(
 
         # A pagar previsto
         a_pagar = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true {date_filter}
         """, *params) or 0
 
@@ -4017,7 +4231,7 @@ async def get_reports_management(
 
         # A pagar
         total_payable = await conn.fetchval("""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, paid_amount, 0)), 0) FROM accounts_payable
+            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true
         """) or 0
 
