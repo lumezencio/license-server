@@ -1267,6 +1267,7 @@ async def create_purchase(
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Cria uma nova compra com itens e contas a pagar"""
+    import uuid
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
