@@ -65,8 +65,8 @@ export const clientsService = {
     return response.data;
   },
 
-  delete: async (id) => {
-    const response = await api.delete(`/clients/${id}`);
+  delete: async (id, permanent = false) => {
+    const response = await api.delete(`/clients/${id}?permanent=${permanent}`);
     return response.data;
   },
 };

@@ -148,10 +148,11 @@ async def update_client(
 @router.delete("/{client_id}")
 async def delete_client(
     client_id: str,
+    permanent: bool = Query(False, description="Se True, exclui permanentemente"),
     db: AsyncSession = Depends(get_db),
     admin: AdminUser = Depends(get_current_admin)
 ):
-    """Remove cliente (soft delete - desativa)"""
+    """Remove cliente (soft delete por padrão, ou hard delete se permanent=true)"""
     result = await db.execute(
         select(Client).where(Client.id == client_id)
     )
@@ -163,8 +164,26 @@ async def delete_client(
             detail="Client not found"
         )
 
-    # Soft delete
-    client.is_active = False
-    await db.commit()
+    if permanent:
+        # Hard delete - exclusão permanente
+        # Verifica se tem licenças associadas
+        from app.models import License
+        licenses_result = await db.execute(
+            select(License).where(License.client_id == client_id)
+        )
+        licenses = licenses_result.scalars().all()
 
-    return {"message": "Client deactivated successfully"}
+        if licenses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Não é possível excluir. Cliente possui {len(licenses)} licença(s) associada(s)."
+            )
+
+        await db.delete(client)
+        await db.commit()
+        return {"message": "Client permanently deleted"}
+    else:
+        # Soft delete
+        client.is_active = False
+        await db.commit()
+        return {"message": "Client deactivated successfully"}

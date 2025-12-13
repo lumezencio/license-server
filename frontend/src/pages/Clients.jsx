@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Users, Plus, Search, Edit2, Trash2, Building2, Mail, Phone,
-  MapPin, Key, Eye
+  MapPin, Key, Eye, UserX, AlertTriangle, CheckCircle, XCircle,
+  RefreshCw
 } from 'lucide-react';
 import {
   Card, CardContent, CardHeader, Button, Input, Badge, Modal,
@@ -18,11 +19,14 @@ export default function Clients() {
   const [clients, setClients] = useState([]);
   const [licenses, setLicenses] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all'); // all, active, inactive
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
   const [viewingClient, setViewingClient] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -55,11 +59,28 @@ export default function Clients() {
     }
   };
 
-  const filteredClients = clients.filter(client =>
-    client.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    client.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    client.document?.includes(searchTerm)
-  );
+  // Estatísticas
+  const stats = {
+    total: clients.length,
+    active: clients.filter(c => c.is_active !== false).length,
+    inactive: clients.filter(c => c.is_active === false).length,
+  };
+
+  const filteredClients = clients.filter(client => {
+    const matchesSearch =
+      client.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      client.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      client.document?.includes(searchTerm);
+
+    const matchesStatus =
+      statusFilter === 'all' ||
+      (statusFilter === 'active' && client.is_active !== false) ||
+      (statusFilter === 'inactive' && client.is_active === false);
+
+    return matchesSearch && matchesStatus;
+  });
+
+  const inactiveClients = clients.filter(c => c.is_active === false);
 
   const getClientLicenses = (clientId) => {
     return licenses.filter(l => l.client_id === clientId);
@@ -124,15 +145,63 @@ export default function Clients() {
     }
   };
 
-  const handleDelete = async (client) => {
-    if (!confirm(`Deseja excluir o cliente "${client.name}"?`)) return;
+  const handleDeactivate = async (client) => {
+    if (!confirm(`Deseja desativar o cliente "${client.name}"?\n\nO cliente será marcado como inativo.`)) return;
 
     try {
       await clientsService.delete(client.id);
       loadData();
     } catch (error) {
-      console.error('Erro ao excluir cliente:', error);
-      alert(error.response?.data?.detail || 'Erro ao excluir cliente');
+      console.error('Erro ao desativar cliente:', error);
+      alert(error.response?.data?.detail || 'Erro ao desativar cliente');
+    }
+  };
+
+  const handleReactivate = async (client) => {
+    if (!confirm(`Deseja reativar o cliente "${client.name}"?`)) return;
+
+    try {
+      await clientsService.update(client.id, { is_active: true });
+      loadData();
+    } catch (error) {
+      console.error('Erro ao reativar cliente:', error);
+      alert(error.response?.data?.detail || 'Erro ao reativar cliente');
+    }
+  };
+
+  const handleDeleteInactive = async () => {
+    setDeleting(true);
+    let deleted = 0;
+    let errors = [];
+
+    try {
+      for (const client of inactiveClients) {
+        try {
+          // Exclusão permanente (permanent=true)
+          await clientsService.delete(client.id, true);
+          deleted++;
+        } catch (e) {
+          errors.push({
+            name: client.name,
+            error: e.response?.data?.detail || 'Erro desconhecido'
+          });
+        }
+      }
+
+      setIsDeleteModalOpen(false);
+      loadData();
+
+      if (errors.length > 0) {
+        const errorMessages = errors.map(e => `• ${e.name}: ${e.error}`).join('\n');
+        alert(`${deleted} cliente(s) excluído(s) permanentemente.\n\n${errors.length} erro(s):\n${errorMessages}`);
+      } else {
+        alert(`${deleted} cliente(s) excluído(s) permanentemente com sucesso!`);
+      }
+    } catch (error) {
+      console.error('Erro ao excluir clientes:', error);
+      alert('Erro ao excluir clientes inativos');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -152,20 +221,130 @@ export default function Clients() {
           <h1 className="text-2xl sm:text-3xl font-bold text-white">Clientes</h1>
           <p className="text-white/60 mt-1 text-sm sm:text-base">Gerencie os clientes do sistema</p>
         </div>
-        <Button icon={Plus} onClick={openNewModal} className="w-full sm:w-auto">
-          Novo Cliente
-        </Button>
+        <div className="flex gap-2">
+          <Button icon={RefreshCw} variant="secondary" onClick={loadData}>
+            Atualizar
+          </Button>
+          <Button icon={Plus} onClick={openNewModal}>
+            Novo Cliente
+          </Button>
+        </div>
       </div>
 
-      {/* Search - Responsivo */}
+      {/* Stats Cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <Card hover={false} className="cursor-pointer" onClick={() => setStatusFilter('all')}>
+          <CardContent className="py-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <Users className="w-5 h-5 text-[var(--ds-cyan)]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-bold text-white">{stats.total}</p>
+            <p className="text-white/50 text-xs sm:text-sm">Total</p>
+          </CardContent>
+        </Card>
+
+        <Card hover={false} className="cursor-pointer" onClick={() => setStatusFilter('active')}>
+          <CardContent className="py-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <CheckCircle className="w-5 h-5 text-[var(--ds-green)]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-bold text-[var(--ds-green)]">{stats.active}</p>
+            <p className="text-white/50 text-xs sm:text-sm">Ativos</p>
+          </CardContent>
+        </Card>
+
+        <Card hover={false} className="cursor-pointer" onClick={() => setStatusFilter('inactive')}>
+          <CardContent className="py-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <XCircle className="w-5 h-5 text-[var(--ds-red)]" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-bold text-[var(--ds-red)]">{stats.inactive}</p>
+            <p className="text-white/50 text-xs sm:text-sm">Inativos</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Card de alerta para clientes inativos */}
+      {stats.inactive > 0 && (
+        <Card hover={false} className="border-[var(--ds-yellow)]/30 bg-[var(--ds-yellow)]/5">
+          <CardContent className="py-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-[var(--ds-yellow)]/20 flex items-center justify-center">
+                  <UserX className="w-5 h-5 text-[var(--ds-yellow)]" />
+                </div>
+                <div>
+                  <p className="text-white font-semibold">
+                    {stats.inactive} cliente{stats.inactive > 1 ? 's' : ''} inativo{stats.inactive > 1 ? 's' : ''}
+                  </p>
+                  <p className="text-white/60 text-sm">
+                    Clientes desativados que podem ser excluídos permanentemente
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2 w-full sm:w-auto">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setStatusFilter('inactive')}
+                  className="flex-1 sm:flex-initial"
+                >
+                  Ver Inativos
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  icon={Trash2}
+                  onClick={() => setIsDeleteModalOpen(true)}
+                  className="flex-1 sm:flex-initial"
+                >
+                  Excluir Todos
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Search and Filter - Responsivo */}
       <Card hover={false}>
         <CardContent className="py-3 sm:py-4">
-          <Input
-            icon={Search}
-            placeholder="Buscar por nome, email ou documento..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="flex-1">
+              <Input
+                icon={Search}
+                placeholder="Buscar por nome, email ou documento..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant={statusFilter === 'all' ? 'primary' : 'ghost'}
+                size="sm"
+                onClick={() => setStatusFilter('all')}
+                className="flex-1 sm:flex-initial"
+              >
+                Todos
+              </Button>
+              <Button
+                variant={statusFilter === 'active' ? 'success' : 'ghost'}
+                size="sm"
+                onClick={() => setStatusFilter('active')}
+                className="flex-1 sm:flex-initial"
+              >
+                Ativos
+              </Button>
+              <Button
+                variant={statusFilter === 'inactive' ? 'danger' : 'ghost'}
+                size="sm"
+                onClick={() => setStatusFilter('inactive')}
+                className="flex-1 sm:flex-initial"
+              >
+                Inativos
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -179,8 +358,8 @@ export default function Clients() {
                   <TableHead>Cliente</TableHead>
                   <TableHead className="hidden sm:table-cell">Documento</TableHead>
                   <TableHead className="hidden md:table-cell">Contato</TableHead>
-                  <TableHead>Licencas</TableHead>
-                  <TableHead className="hidden lg:table-cell">Cadastro</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="hidden lg:table-cell">Licencas</TableHead>
                   <TableHead className="text-right">Acoes</TableHead>
                 </TableRow>
               </TableHeader>
@@ -188,12 +367,17 @@ export default function Clients() {
                 {filteredClients.map((client) => {
                   const clientLicenses = getClientLicenses(client.id);
                   const activeLicenses = clientLicenses.filter(l => l.status === 'active').length;
+                  const isActive = client.is_active !== false;
 
                   return (
-                    <TableRow key={client.id}>
+                    <TableRow key={client.id} className={!isActive ? 'opacity-60' : ''}>
                       <TableCell>
                         <div className="flex items-center gap-2 sm:gap-3">
-                          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                          <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl flex items-center justify-center flex-shrink-0 ${
+                            isActive
+                              ? 'bg-gradient-to-br from-blue-500 to-purple-600'
+                              : 'bg-gradient-to-br from-gray-500 to-gray-600'
+                          }`}>
                             <Building2 className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
                           </div>
                           <div className="min-w-0">
@@ -212,19 +396,16 @@ export default function Clients() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
-                          <Badge variant={activeLicenses > 0 ? 'success' : 'default'} size="sm">
-                            {activeLicenses} ativa{activeLicenses !== 1 ? 's' : ''}
-                          </Badge>
-                        </div>
+                        <Badge variant={isActive ? 'success' : 'danger'} size="sm">
+                          {isActive ? 'Ativo' : 'Inativo'}
+                        </Badge>
                       </TableCell>
                       <TableCell className="hidden lg:table-cell">
-                        <span className="text-white/70 text-sm">
-                          {client.created_at
-                            ? format(parseISO(client.created_at), "dd/MM/yyyy", { locale: ptBR })
-                            : '-'
-                          }
-                        </span>
+                        <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+                          <Badge variant={activeLicenses > 0 ? 'info' : 'default'} size="sm">
+                            {activeLicenses} licença{activeLicenses !== 1 ? 's' : ''}
+                          </Badge>
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center justify-end gap-1 sm:gap-2">
@@ -240,12 +421,23 @@ export default function Clients() {
                             size="iconOnly"
                             onClick={() => openEditModal(client)}
                           />
-                          <Icon3DButton
-                            icon={Trash2}
-                            variant="danger"
-                            size="iconOnly"
-                            onClick={() => handleDelete(client)}
-                          />
+                          {isActive ? (
+                            <Icon3DButton
+                              icon={XCircle}
+                              variant="warning"
+                              size="iconOnly"
+                              onClick={() => handleDeactivate(client)}
+                              title="Desativar cliente"
+                            />
+                          ) : (
+                            <Icon3DButton
+                              icon={CheckCircle}
+                              variant="success"
+                              size="iconOnly"
+                              onClick={() => handleReactivate(client)}
+                              title="Reativar cliente"
+                            />
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -254,7 +446,10 @@ export default function Clients() {
                 {filteredClients.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center py-8 text-white/50">
-                      {searchTerm ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
+                      {searchTerm || statusFilter !== 'all'
+                        ? 'Nenhum cliente encontrado com os filtros aplicados'
+                        : 'Nenhum cliente cadastrado'
+                      }
                     </TableCell>
                   </TableRow>
                 )}
@@ -263,6 +458,56 @@ export default function Clients() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Modal de exclusão em massa */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        title="Excluir Clientes Inativos"
+        size="md"
+        icon={AlertTriangle}
+      >
+        <div className="space-y-4">
+          <div className="bg-[var(--ds-red)]/10 border border-[var(--ds-red)]/30 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-6 h-6 text-[var(--ds-red)] flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-white font-semibold">Atenção!</p>
+                <p className="text-white/70 text-sm mt-1">
+                  Esta ação irá processar a exclusão de <strong className="text-[var(--ds-red)]">{stats.inactive}</strong> cliente{stats.inactive > 1 ? 's' : ''} inativo{stats.inactive > 1 ? 's' : ''}.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-white/70 text-sm">Clientes que serão afetados:</p>
+            <div className="max-h-48 overflow-y-auto space-y-2">
+              {inactiveClients.map(client => (
+                <div key={client.id} className="flex items-center gap-2 bg-white/5 rounded-lg p-2">
+                  <UserX className="w-4 h-4 text-[var(--ds-red)]" />
+                  <span className="text-white text-sm truncate">{client.name}</span>
+                  <span className="text-white/50 text-xs truncate">({client.email})</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-4 border-t border-white/10">
+            <Button variant="ghost" onClick={() => setIsDeleteModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="danger"
+              icon={Trash2}
+              loading={deleting}
+              onClick={handleDeleteInactive}
+            >
+              Confirmar Exclusão
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Create/Edit Modal - Responsivo */}
       <Modal
@@ -397,12 +642,23 @@ export default function Clients() {
           <div className="space-y-4 sm:space-y-6">
             {/* Header do cliente */}
             <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 text-center sm:text-left">
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl sm:rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+              <div className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl sm:rounded-2xl flex items-center justify-center flex-shrink-0 ${
+                viewingClient.is_active !== false
+                  ? 'bg-gradient-to-br from-blue-500 to-purple-600'
+                  : 'bg-gradient-to-br from-gray-500 to-gray-600'
+              }`}>
                 <Building2 className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <h3 className="text-xl sm:text-2xl font-bold text-white truncate">{viewingClient.name}</h3>
                 <p className="text-white/60 text-sm sm:text-base truncate">{viewingClient.email}</p>
+                <Badge
+                  variant={viewingClient.is_active !== false ? 'success' : 'danger'}
+                  size="sm"
+                  className="mt-2"
+                >
+                  {viewingClient.is_active !== false ? 'Ativo' : 'Inativo'}
+                </Badge>
               </div>
             </div>
 
