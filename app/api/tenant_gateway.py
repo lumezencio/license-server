@@ -359,7 +359,7 @@ async def list_customers(
         if search:
             rows = await conn.fetch("""
                 SELECT *,
-                    COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                    COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name,
                     cpf_cnpj as document
                 FROM customers
                 WHERE first_name ILIKE $1 OR last_name ILIKE $1
@@ -370,7 +370,7 @@ async def list_customers(
         else:
             rows = await conn.fetch("""
                 SELECT *,
-                    COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                    COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name,
                     cpf_cnpj as document
                 FROM customers
                 ORDER BY first_name, last_name
@@ -394,7 +394,7 @@ async def get_customer(
     try:
         row = await conn.fetchrow("""
             SELECT *,
-                COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name,
                 cpf_cnpj as document
             FROM customers WHERE id = $1
         """, customer_id)
@@ -1220,7 +1220,7 @@ async def list_sales(
         # Schema legado: customers usa first_name/last_name
         rows = await conn.fetch("""
             SELECT s.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name
             FROM sales s
             LEFT JOIN customers c ON s.customer_id = c.id
             ORDER BY s.sale_date DESC
@@ -1555,7 +1555,7 @@ async def list_accounts_receivable(
             print(f"[AR] Filtrando por customer_id: {customer_id}", flush=True)
             rows = await conn.fetch("""
                 SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                     (SELECT MIN(child.due_date) FROM accounts_receivable child
                      WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
@@ -1575,7 +1575,7 @@ async def list_accounts_receivable(
         if search:
             rows = await conn.fetch("""
                 SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                     (SELECT MIN(child.due_date) FROM accounts_receivable child
                      WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
@@ -1595,7 +1595,7 @@ async def list_accounts_receivable(
             if status_upper == 'OVERDUE':
                 rows = await conn.fetch("""
                     SELECT ar.*,
-                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                        COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                         (SELECT MIN(child.due_date) FROM accounts_receivable child
                          WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
@@ -1624,7 +1624,7 @@ async def list_accounts_receivable(
             elif status_upper == 'PAID':
                 rows = await conn.fetch("""
                     SELECT ar.*,
-                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                        COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                         (SELECT MIN(child.due_date) FROM accounts_receivable child
                          WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
@@ -1650,7 +1650,7 @@ async def list_accounts_receivable(
             else:
                 rows = await conn.fetch("""
                     SELECT ar.*,
-                        COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                        COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                         (SELECT MIN(child.due_date) FROM accounts_receivable child
                          WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
@@ -1667,7 +1667,7 @@ async def list_accounts_receivable(
         else:
             rows = await conn.fetch("""
                 SELECT ar.*,
-                    COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                    COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                     (SELECT MIN(child.due_date) FROM accounts_receivable child
                      WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
@@ -1695,7 +1695,7 @@ async def get_account_receivable(
     try:
         row = await conn.fetchrow("""
             SELECT ar.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE ar.id = $1
@@ -1720,7 +1720,7 @@ async def get_account_installments(
         # Busca a conta pai e todas as parcelas filhas
         rows = await conn.fetch("""
             SELECT ar.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE ar.id = $1 OR ar.parent_id = $1
@@ -2003,7 +2003,7 @@ async def generate_installment_receipt(
                    ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                    ar.due_date, ar.payment_date, ar.status::text as status,
                    ar.installment_number, ar.total_installments,
-                   COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                   COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                    c.cpf_cnpj as customer_document,
                    c.email as customer_email,
                    c.phone as customer_phone,
@@ -2022,7 +2022,7 @@ async def generate_installment_receipt(
                        ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                        ar.due_date, ar.payment_date, ar.status::text as status,
                        ar.installment_number, ar.total_installments,
-                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                        c.cpf_cnpj as customer_document,
                        c.email as customer_email,
                        c.phone as customer_phone,
@@ -2116,7 +2116,7 @@ async def generate_promissory_note(
                    ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                    ar.due_date, ar.payment_date, ar.status::text as status,
                    ar.installment_number, ar.total_installments,
-                   COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                   COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                    c.cpf_cnpj as customer_document,
                    c.email as customer_email,
                    c.phone as customer_phone,
@@ -2136,7 +2136,7 @@ async def generate_promissory_note(
                        ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                        ar.due_date, ar.payment_date, ar.status::text as status,
                        ar.installment_number, ar.total_installments,
-                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                        c.cpf_cnpj as customer_document,
                        c.email as customer_email,
                        c.phone as customer_phone,
@@ -2309,7 +2309,7 @@ async def get_customer_for_receivable(
         # Schema legado: customers usa first_name/last_name e cpf_cnpj
         row = await conn.fetchrow("""
             SELECT id,
-                COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name,
                 cpf_cnpj, email, phone
             FROM customers WHERE id = $1
         """, customer_id)
@@ -3041,6 +3041,168 @@ async def list_legal_calculations(
         """, limit, skip)
 
         return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+@router.get("/legal-calculations/{calc_id}")
+async def get_legal_calculation(
+    calc_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Busca calculo juridico por ID"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        row = await conn.fetchrow("""
+            SELECT * FROM legal_calculations WHERE id = $1
+        """, calc_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Calculo nao encontrado")
+        return row_to_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.post("/legal-calculations")
+async def create_legal_calculation(
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria novo calculo juridico"""
+    import uuid
+    import json
+
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        data = await request.json()
+        calc_id = str(uuid.uuid4())
+
+        # Campos principais
+        title = data.get("nome", "")
+        description = data.get("descricao", "")
+        calculation_type = data.get("indice_correcao", "ipca_e")
+        customer_id = data.get("customer_id")
+
+        # Valores principais
+        principal_amount = 0.0
+        debitos = data.get("debitos", [])
+        for d in debitos:
+            val = d.get("valor_original", 0)
+            if isinstance(val, str):
+                val = float(val.replace(",", ".")) if val else 0
+            principal_amount += val
+
+        # Datas
+        start_date = None
+        if debitos:
+            dates = [d.get("data_vencimento") for d in debitos if d.get("data_vencimento")]
+            if dates:
+                start_date = to_date(min(dates))
+
+        end_date = to_date(data.get("termo_final"))
+
+        # Armazena todos os dados no result_data (JSONB)
+        result_data = json.dumps(data)
+
+        await conn.execute("""
+            INSERT INTO legal_calculations
+            (id, title, description, calculation_type, principal_amount, start_date, end_date, result_data, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, calc_id, title, description, calculation_type, principal_amount, start_date, end_date, result_data)
+
+        return {"id": calc_id, "message": "Calculo criado com sucesso"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao criar calculo: {str(e)}")
+    finally:
+        await conn.close()
+
+
+@router.put("/legal-calculations/{calc_id}")
+async def update_legal_calculation(
+    calc_id: str,
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza calculo juridico existente"""
+    import json
+
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Verifica se existe
+        existing = await conn.fetchrow("SELECT id FROM legal_calculations WHERE id = $1", calc_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Calculo nao encontrado")
+
+        data = await request.json()
+
+        # Campos principais
+        title = data.get("nome", "")
+        description = data.get("descricao", "")
+        calculation_type = data.get("indice_correcao", "ipca_e")
+
+        # Valores principais
+        principal_amount = 0.0
+        debitos = data.get("debitos", [])
+        for d in debitos:
+            val = d.get("valor_original", 0)
+            if isinstance(val, str):
+                val = float(val.replace(",", ".")) if val else 0
+            principal_amount += val
+
+        # Datas
+        start_date = None
+        if debitos:
+            dates = [d.get("data_vencimento") for d in debitos if d.get("data_vencimento")]
+            if dates:
+                start_date = to_date(min(dates))
+
+        end_date = to_date(data.get("termo_final"))
+
+        # Armazena todos os dados no result_data (JSONB)
+        result_data = json.dumps(data)
+
+        await conn.execute("""
+            UPDATE legal_calculations SET
+                title = $1,
+                description = $2,
+                calculation_type = $3,
+                principal_amount = $4,
+                start_date = $5,
+                end_date = $6,
+                result_data = $7::jsonb,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $8
+        """, title, description, calculation_type, principal_amount, start_date, end_date, result_data, calc_id)
+
+        return {"id": calc_id, "message": "Calculo atualizado com sucesso"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar calculo: {str(e)}")
+    finally:
+        await conn.close()
+
+
+@router.delete("/legal-calculations/{calc_id}")
+async def delete_legal_calculation(
+    calc_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Remove calculo juridico"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        result = await conn.execute("DELETE FROM legal_calculations WHERE id = $1", calc_id)
+        if result == "DELETE 0":
+            raise HTTPException(status_code=404, detail="Calculo nao encontrado")
+        return {"message": "Calculo removido com sucesso"}
     finally:
         await conn.close()
 
@@ -3851,10 +4013,10 @@ async def get_reports_customers_list(
         # Schema legado: customers usa first_name/last_name e cpf_cnpj
         rows = await conn.fetch("""
             SELECT id,
-                COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name,
                 cpf_cnpj as document, email, phone
             FROM customers
-            ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)
+            ORDER BY COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name)
             LIMIT 1000
         """)
         return [row_to_dict(row) for row in rows]
@@ -3963,7 +4125,7 @@ async def get_reports_accounts_receivable_summary(
                 ar.paid_amount, ar.due_date, ar.payment_date, ar.status, ar.payment_method,
                 ar.installment_number, ar.total_installments, ar.parent_id, ar.notes,
                 ar.is_active, ar.created_at, ar.updated_at,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
             WHERE {where_clause}
@@ -4154,7 +4316,7 @@ async def get_reports_sales(
 
         rows = await conn.fetch(f"""
             SELECT s.*,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                 u.full_name as seller_name
             FROM sales s
             LEFT JOIN customers c ON s.customer_id = c.id
@@ -4401,7 +4563,7 @@ async def get_reports_default_analysis(
         rows = await conn.fetch(f"""
             SELECT ar.id, ar.customer_id, ar.description, ar.document_number, ar.amount,
                 ar.paid_amount, ar.due_date, ar.payment_date, ar.status,
-                COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                 CURRENT_DATE - ar.due_date as days_overdue
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
@@ -4601,7 +4763,7 @@ async def get_reports_registry(
 
         else:  # customers
             base_query = """
-                SELECT id, COALESCE(first_name || ' ' || last_name, company_name, trade_name) as name,
+                SELECT id, COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name,
                     cpf_cnpj as document, email, phone, address, city, state,
                     COALESCE(is_active, true) as active
                 FROM customers WHERE 1=1
@@ -4621,7 +4783,7 @@ async def get_reports_registry(
                     UPPER(COALESCE(cpf_cnpj, '')) LIKE $1 OR
                     UPPER(COALESCE(email, '')) LIKE $1
                 )"""
-            base_query += " ORDER BY COALESCE(first_name || ' ' || last_name, company_name, trade_name)"
+            base_query += " ORDER BY COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name)"
             rows = await conn.fetch(base_query, search_param) if search_param else await conn.fetch(base_query)
 
         # Calcula resumo
@@ -4689,7 +4851,7 @@ async def get_installments_for_promissory(
                    ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                    ar.due_date, ar.payment_date, ar.status::text as status,
                    ar.installment_number, ar.total_installments, ar.parent_id,
-                   COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                   COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                    c.cpf_cnpj as customer_document
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
@@ -4706,7 +4868,7 @@ async def get_installments_for_promissory(
                        ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                        ar.due_date, ar.payment_date, ar.status::text as status,
                        ar.installment_number, ar.total_installments, ar.parent_id,
-                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                        c.cpf_cnpj as customer_document
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
@@ -4804,7 +4966,7 @@ async def generate_promissory_pdf_batch(
                        ar.amount, COALESCE(ar.paid_amount, 0) as paid_amount,
                        ar.due_date, ar.payment_date, ar.status::text as status,
                        ar.installment_number, ar.total_installments,
-                       COALESCE(c.first_name || ' ' || c.last_name, c.company_name, c.trade_name) as customer_name,
+                       COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                        c.cpf_cnpj as customer_document,
                        c.address as customer_address,
                        c.city as customer_city,
