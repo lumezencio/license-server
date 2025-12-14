@@ -3084,6 +3084,12 @@ async def fetch_bcb_index(codigo_serie: int, data_inicio, data_fim):
 async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final):
     """
     Calcula fator de correcao monetaria entre duas datas
+    METODOLOGIA TJSP/DR Calc (atualizada Lei 14.905/2024):
+    - Primeiro mes: mes SEGUINTE ao vencimento (exclui o mes do vencimento)
+    - Ultimo mes: mes ANTERIOR ao termo
+    - Para IPCA-E: usa IPCA-E ate agosto/2024 e IPCA-15 a partir de setembro/2024
+      (conforme nova tabela pratica TJSP publicada em set/2024)
+    - NAO projeta indices futuros - usa apenas indices publicados
     Retorna 1 se nao houver correcao ou indice nao encontrado
     """
     from datetime import date, datetime
@@ -3092,11 +3098,6 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
         return 1.0
 
     tipo_indice_lower = tipo_indice.lower()
-    if tipo_indice_lower not in BCB_INDEX_CODES:
-        logger.warning(f"Indice {tipo_indice} nao encontrado")
-        return 1.0
-
-    codigo_serie = BCB_INDEX_CODES[tipo_indice_lower]
 
     # Converte datas
     if isinstance(data_inicial, str):
@@ -3104,52 +3105,100 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
     if isinstance(data_final, str):
         data_final = datetime.strptime(data_final, "%Y-%m-%d").date()
 
-    # Busca indices do BCB
-    dados = await fetch_bcb_index(codigo_serie, data_inicial, data_final)
+    # METODOLOGIA TJSP: Primeiro mes = MES SEGUINTE ao vencimento
+    # Exemplo: vencimento 13/07/2023 -> primeiro indice = agosto/2023
+    if data_inicial.month == 12:
+        primeiro_mes = date(data_inicial.year + 1, 1, 1)
+    else:
+        primeiro_mes = date(data_inicial.year, data_inicial.month + 1, 1)
 
-    if not dados:
-        logger.warning(f"Nenhum dado encontrado para {tipo_indice}")
+    # METODOLOGIA TJSP: Ultimo mes = MES ANTERIOR ao termo
+    # Exemplo: termo dezembro/2025 -> ultimo indice = novembro/2025
+    if data_final.month == 1:
+        ultimo_mes_teorico = date(data_final.year - 1, 12, 1)
+    else:
+        ultimo_mes_teorico = date(data_final.year, data_final.month - 1, 1)
+
+    # Monta dicionario de indices por mes
+    # Para IPCA-E: usa combinacao IPCA-E ate ago/2024 + IPCA-15 de set/2024 em diante
+    # (conforme nova tabela pratica TJSP - Lei 14.905/2024)
+    indices_por_mes = {}
+    marco_ipca15 = date(2024, 9, 1)  # A partir de setembro/2024, usa IPCA-15
+
+    if tipo_indice_lower == "ipca_e":
+        # Busca IPCA-E ate agosto/2024
+        dados_ipca_e = await fetch_bcb_index(
+            BCB_INDEX_CODES["ipca_e"],
+            primeiro_mes,
+            date(2024, 8, 31)
+        )
+        for item in dados_ipca_e:
+            try:
+                data_str = item.get("data", "")
+                valor_str = item.get("valor", "0")
+                if data_str and valor_str:
+                    data_idx = datetime.strptime(data_str, "%d/%m/%Y").date()
+                    data_mes = date(data_idx.year, data_idx.month, 1)
+                    indices_por_mes[data_mes] = float(str(valor_str).replace(",", "."))
+            except:
+                continue
+
+        # Busca IPCA-15 de setembro/2024 em diante
+        dados_ipca15 = await fetch_bcb_index(
+            BCB_INDEX_CODES["ipca_15"],
+            date(2024, 9, 1),
+            date.today()
+        )
+        for item in dados_ipca15:
+            try:
+                data_str = item.get("data", "")
+                valor_str = item.get("valor", "0")
+                if data_str and valor_str:
+                    data_idx = datetime.strptime(data_str, "%d/%m/%Y").date()
+                    data_mes = date(data_idx.year, data_idx.month, 1)
+                    indices_por_mes[data_mes] = float(str(valor_str).replace(",", "."))
+            except:
+                continue
+    else:
+        # Para outros indices, busca normalmente
+        if tipo_indice_lower not in BCB_INDEX_CODES:
+            logger.warning(f"Indice {tipo_indice} nao encontrado")
+            return 1.0
+
+        codigo_serie = BCB_INDEX_CODES[tipo_indice_lower]
+        dados = await fetch_bcb_index(codigo_serie, primeiro_mes, date.today())
+
+        for item in dados:
+            try:
+                data_str = item.get("data", "")
+                valor_str = item.get("valor", "0")
+                if data_str and valor_str:
+                    data_idx = datetime.strptime(data_str, "%d/%m/%Y").date()
+                    data_mes = date(data_idx.year, data_idx.month, 1)
+                    indices_por_mes[data_mes] = float(str(valor_str).replace(",", "."))
+            except:
+                continue
+
+    if not indices_por_mes:
+        logger.warning(f"Nenhum indice encontrado para {tipo_indice}")
         return 1.0
 
-    # Calcula fator acumulado
-    # Primeiro mes: mes do vencimento
-    # Ultimo mes: mes anterior ao termo
-    primeiro_mes = date(data_inicial.year, data_inicial.month, 1)
+    # Determina o ultimo mes disponivel
+    ultimo_mes_disponivel = max(indices_por_mes.keys())
 
-    if data_final.month == 1:
-        ultimo_mes = date(data_final.year - 1, 12, 1)
-    else:
-        ultimo_mes = date(data_final.year, data_final.month - 1, 1)
+    # Usa o menor entre o mes teorico e o ultimo disponivel
+    # NAO projeta indices futuros - compativel com DR Calc e Calculo Juridico
+    ultimo_mes = min(ultimo_mes_teorico, ultimo_mes_disponivel)
 
-    # Cria dicionario de indices por mes
-    indices_por_mes = {}
-    for item in dados:
-        try:
-            data_str = item.get("data", "")
-            valor_str = item.get("valor", "0")
-            if data_str and valor_str:
-                data_idx = datetime.strptime(data_str, "%d/%m/%Y").date()
-                data_mes = date(data_idx.year, data_idx.month, 1)
-                indices_por_mes[data_mes] = float(str(valor_str).replace(",", "."))
-        except:
-            continue
-
-    # Ultimo valor disponivel para projecao
-    ultimo_valor = None
-    if indices_por_mes:
-        ultimo_mes_disp = max(indices_por_mes.keys())
-        ultimo_valor = indices_por_mes[ultimo_mes_disp]
-
-    # Calcula fator
+    # Calcula fator acumulado - APENAS com indices reais
     fator = 1.0
     mes_atual = primeiro_mes
+
     while mes_atual <= ultimo_mes:
         if mes_atual in indices_por_mes:
             valor = indices_por_mes[mes_atual]
             fator *= (1 + valor / 100)
-        elif ultimo_valor is not None:
-            # Usa ultimo valor como projecao
-            fator *= (1 + ultimo_valor / 100)
+        # Se nao tem indice para o mes, NAO inclui (metodologia TJSP)
 
         # Avanca para proximo mes
         if mes_atual.month == 12:
@@ -3157,6 +3206,7 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
         else:
             mes_atual = date(mes_atual.year, mes_atual.month + 1, 1)
 
+    logger.debug(f"Correcao {tipo_indice}: {primeiro_mes} a {ultimo_mes}, fator={fator:.6f}")
     return fator
 
 def calculate_interest_months(data_inicial, data_final):
