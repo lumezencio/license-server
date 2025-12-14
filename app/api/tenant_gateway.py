@@ -3066,7 +3066,8 @@ async def get_legal_calculation(
     calc_id: str,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Busca calculo juridico por ID"""
+    """Busca calculo juridico por ID - retorna dados do result_data mesclados"""
+    import json
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
@@ -3076,7 +3077,21 @@ async def get_legal_calculation(
         """, calc_id)
         if not row:
             raise HTTPException(status_code=404, detail="Calculo nao encontrado")
-        return row_to_dict(row)
+
+        # Converte row para dict
+        result = row_to_dict(row)
+
+        # Extrai result_data (JSONB) e mescla com o resultado
+        # O frontend espera os dados diretamente (nome, debitos, etc)
+        if result.get("result_data"):
+            result_data = result["result_data"]
+            # Se for string, faz parse
+            if isinstance(result_data, str):
+                result_data = json.loads(result_data)
+            # Mescla os dados do result_data no resultado
+            result.update(result_data)
+
+        return result
     finally:
         await conn.close()
 
