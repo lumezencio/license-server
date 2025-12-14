@@ -3210,10 +3210,11 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
         else:
             mes_atual = date(mes_atual.year, mes_atual.month + 1, 1)
 
-    # Arredonda para 4 casas decimais (mesmo padrao do DR Calc e Calculo Juridico)
-    fator_arredondado = round(fator, 4)
-    logger.debug(f"Correcao {tipo_indice}: {primeiro_mes} a {ultimo_mes}, fator={fator:.6f} -> {fator_arredondado:.4f}")
-    return fator_arredondado
+    # IMPORTANTE: Retorna o fator EXATO para calculo preciso
+    # O arredondamento para 4 casas e feito apenas na EXIBICAO (resposta da API)
+    # Isso garante que o valor corrigido seja identico ao DR Calc
+    logger.debug(f"Correcao {tipo_indice}: {primeiro_mes} a {ultimo_mes}, fator={fator:.6f}")
+    return fator
 
 def calculate_interest_months(data_inicial, data_final):
     """Calcula numero de meses entre duas datas (pro-rata 30 dias)"""
