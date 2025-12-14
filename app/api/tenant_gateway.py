@@ -3547,6 +3547,77 @@ async def delete_legal_calculation(
         await conn.close()
 
 
+@router.post("/legal-calculations/{calc_id}/recalculate")
+async def recalculate_legal_calculation(
+    calc_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Recalcula um calculo juridico existente com indices atualizados"""
+    import json
+
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca o calculo existente
+        row = await conn.fetchrow("SELECT * FROM legal_calculations WHERE id = $1", calc_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Calculo nao encontrado")
+
+        result = row_to_dict(row)
+
+        # Extrai dados do result_data
+        data = {}
+        if result.get("result_data"):
+            result_data = result["result_data"]
+            if isinstance(result_data, str):
+                data = json.loads(result_data)
+            else:
+                data = result_data
+
+        # *** RECALCULA COM INDICES ATUALIZADOS ***
+        data_calculado = await calculate_all_debitos(data)
+
+        # Atualiza no banco
+        title = data_calculado.get("nome", "")
+        description = data_calculado.get("descricao", "")
+        calculation_type = data_calculado.get("indice_correcao", "ipca_e")
+        principal_amount = data_calculado.get("valor_principal", 0.0)
+
+        debitos = data_calculado.get("debitos", [])
+        start_date = None
+        if debitos:
+            dates = [d.get("data_vencimento") for d in debitos if d.get("data_vencimento")]
+            if dates:
+                start_date = to_date(min(dates))
+
+        end_date = to_date(data_calculado.get("termo_final"))
+
+        result_data_json = json.dumps(data_calculado)
+
+        await conn.execute("""
+            UPDATE legal_calculations SET
+                title = $1,
+                description = $2,
+                calculation_type = $3,
+                principal_amount = $4,
+                start_date = $5,
+                end_date = $6,
+                result_data = $7::jsonb,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $8
+        """, title, description, calculation_type, principal_amount, start_date, end_date, result_data_json, calc_id)
+
+        return {"id": calc_id, "message": "Calculo recalculado com sucesso", "data": data_calculado}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao recalcular: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao recalcular: {str(e)}")
+    finally:
+        await conn.close()
+
+
 # === ENDPOINTS - AUTH ===
 
 @router.get("/auth/me")
