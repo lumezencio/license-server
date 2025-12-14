@@ -3039,6 +3039,318 @@ async def delete_logo(
 
 # === ENDPOINTS - LEGAL CALCULATIONS ===
 
+# Servico de calculo de correcao monetaria e juros
+# Busca indices do BCB e calcula fatores de correcao
+
+# Codigos BCB para indices economicos
+BCB_INDEX_CODES = {
+    "ipca": 433,
+    "ipca_e": 10764,
+    "ipca_15": 7478,
+    "inpc": 188,
+    "igpm": 189,
+    "igpdi": 190,
+    "tr": 226,
+    "selic": 4390,
+    "cdi": 4391,
+    "poupanca": 25,
+    "tjlp": 256,
+}
+
+# Cache de indices para evitar chamadas repetidas
+_indices_cache = {}
+
+async def fetch_bcb_index(codigo_serie: int, data_inicio, data_fim):
+    """Busca indice do BCB"""
+    import httpx
+    from datetime import date
+
+    url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados"
+    params = {
+        "formato": "json",
+        "dataInicial": data_inicio.strftime("%d/%m/%Y"),
+        "dataFinal": data_fim.strftime("%d/%m/%Y"),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Erro ao buscar indice BCB {codigo_serie}: {e}")
+        return []
+
+async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final):
+    """
+    Calcula fator de correcao monetaria entre duas datas
+    Retorna 1 se nao houver correcao ou indice nao encontrado
+    """
+    from datetime import date, datetime
+
+    if tipo_indice == "nenhum" or not tipo_indice:
+        return 1.0
+
+    tipo_indice_lower = tipo_indice.lower()
+    if tipo_indice_lower not in BCB_INDEX_CODES:
+        logger.warning(f"Indice {tipo_indice} nao encontrado")
+        return 1.0
+
+    codigo_serie = BCB_INDEX_CODES[tipo_indice_lower]
+
+    # Converte datas
+    if isinstance(data_inicial, str):
+        data_inicial = datetime.strptime(data_inicial, "%Y-%m-%d").date()
+    if isinstance(data_final, str):
+        data_final = datetime.strptime(data_final, "%Y-%m-%d").date()
+
+    # Busca indices do BCB
+    dados = await fetch_bcb_index(codigo_serie, data_inicial, data_final)
+
+    if not dados:
+        logger.warning(f"Nenhum dado encontrado para {tipo_indice}")
+        return 1.0
+
+    # Calcula fator acumulado
+    # Primeiro mes: mes do vencimento
+    # Ultimo mes: mes anterior ao termo
+    primeiro_mes = date(data_inicial.year, data_inicial.month, 1)
+
+    if data_final.month == 1:
+        ultimo_mes = date(data_final.year - 1, 12, 1)
+    else:
+        ultimo_mes = date(data_final.year, data_final.month - 1, 1)
+
+    # Cria dicionario de indices por mes
+    indices_por_mes = {}
+    for item in dados:
+        try:
+            data_str = item.get("data", "")
+            valor_str = item.get("valor", "0")
+            if data_str and valor_str:
+                data_idx = datetime.strptime(data_str, "%d/%m/%Y").date()
+                data_mes = date(data_idx.year, data_idx.month, 1)
+                indices_por_mes[data_mes] = float(str(valor_str).replace(",", "."))
+        except:
+            continue
+
+    # Ultimo valor disponivel para projecao
+    ultimo_valor = None
+    if indices_por_mes:
+        ultimo_mes_disp = max(indices_por_mes.keys())
+        ultimo_valor = indices_por_mes[ultimo_mes_disp]
+
+    # Calcula fator
+    fator = 1.0
+    mes_atual = primeiro_mes
+    while mes_atual <= ultimo_mes:
+        if mes_atual in indices_por_mes:
+            valor = indices_por_mes[mes_atual]
+            fator *= (1 + valor / 100)
+        elif ultimo_valor is not None:
+            # Usa ultimo valor como projecao
+            fator *= (1 + ultimo_valor / 100)
+
+        # Avanca para proximo mes
+        if mes_atual.month == 12:
+            mes_atual = date(mes_atual.year + 1, 1, 1)
+        else:
+            mes_atual = date(mes_atual.year, mes_atual.month + 1, 1)
+
+    return fator
+
+def calculate_interest_months(data_inicial, data_final):
+    """Calcula numero de meses entre duas datas (pro-rata 30 dias)"""
+    from datetime import datetime
+
+    if isinstance(data_inicial, str):
+        data_inicial = datetime.strptime(data_inicial, "%Y-%m-%d").date()
+    if isinstance(data_final, str):
+        data_final = datetime.strptime(data_final, "%Y-%m-%d").date()
+
+    if data_final <= data_inicial:
+        return 0.0
+
+    dias = (data_final - data_inicial).days
+    return dias / 30.0
+
+def get_interest_rate(tipo_juros: str, percentual_personalizado=None):
+    """Retorna taxa de juros mensal"""
+    if tipo_juros == "nao_aplicar":
+        return 0.0
+    elif tipo_juros == "fixos_1_mes":
+        return 1.0
+    elif tipo_juros == "fixos_0_5_mes":
+        return 0.5
+    elif tipo_juros == "juros_legais_6_12":
+        return 1.0  # 12% a.a. = 1% a.m. (padrao pos-2003)
+    elif tipo_juros == "juros_legais_selic_lei_14905":
+        return 0.65  # Aproximado SELIC - IPCA
+    elif tipo_juros == "taxa_legal_selic_ipca":
+        return 0.65
+    elif tipo_juros == "poupanca":
+        return 0.5  # Aproximado
+    elif tipo_juros == "personalizado" and percentual_personalizado:
+        return float(percentual_personalizado)
+    return 0.0
+
+async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_juros_mora: str,
+                          percentual_juros_mora=None, percentual_multa=0, capitalizar=False):
+    """Calcula um debito com correcao, juros e multa"""
+    from datetime import datetime
+
+    valor_original = debito.get("valor_original", 0)
+    if isinstance(valor_original, str):
+        valor_original = float(valor_original.replace(",", ".")) if valor_original else 0
+
+    data_vencimento = debito.get("data_vencimento")
+    if not data_vencimento or not valor_original:
+        return {
+            **debito,
+            "fator_correcao": 1.0,
+            "valor_corrigido": valor_original,
+            "percentual_juros_mora": 0,
+            "valor_juros_mora": 0,
+            "valor_multa": 0,
+            "valor_total": valor_original,
+        }
+
+    # 1. Correcao Monetaria
+    fator = await calculate_correction_factor(tipo_indice, data_vencimento, termo_final)
+    valor_corrigido = valor_original * fator
+
+    # 2. Juros de Mora
+    taxa_mensal = get_interest_rate(tipo_juros_mora, percentual_juros_mora)
+    meses = calculate_interest_months(data_vencimento, termo_final)
+
+    if capitalizar and taxa_mensal > 0:
+        # Juros compostos
+        valor_juros = valor_corrigido * ((1 + taxa_mensal/100) ** meses - 1)
+    else:
+        # Juros simples
+        valor_juros = valor_corrigido * (taxa_mensal / 100) * meses
+
+    percentual_juros_total = taxa_mensal * meses
+
+    # 3. Multa
+    percentual_multa_val = float(percentual_multa) if percentual_multa else 0
+    valor_multa = valor_corrigido * (percentual_multa_val / 100)
+
+    # 4. Total
+    valor_total = valor_corrigido + valor_juros + valor_multa
+
+    return {
+        **debito,
+        "fator_correcao": round(fator, 6),
+        "valor_corrigido": round(valor_corrigido, 2),
+        "percentual_juros_mora": round(percentual_juros_total, 2),
+        "valor_juros_mora": round(valor_juros, 2),
+        "valor_multa": round(valor_multa, 2),
+        "valor_total": round(valor_total, 2),
+    }
+
+async def calculate_all_debitos(data: dict):
+    """Calcula todos os debitos e creditos e retorna dados atualizados"""
+    termo_final = data.get("termo_final")
+    tipo_indice = data.get("indice_correcao", "ipca_e")
+    tipo_juros_mora = data.get("tipo_juros_mora", "nao_aplicar")
+    percentual_juros_mora = data.get("percentual_juros_mora")
+    percentual_multa = data.get("percentual_multa", 0)
+    capitalizar = data.get("capitalizar_juros_mora_mensal", False)
+
+    # Calcula debitos
+    debitos = data.get("debitos", [])
+    debitos_calculados = []
+    total_principal = 0
+    total_corrigido = 0
+    total_juros = 0
+    total_multa = 0
+    total_geral_debitos = 0
+
+    for debito in debitos:
+        calc = await calculate_debito(
+            debito, termo_final, tipo_indice, tipo_juros_mora,
+            percentual_juros_mora, percentual_multa, capitalizar
+        )
+        debitos_calculados.append(calc)
+        total_principal += calc.get("valor_original", 0) or 0
+        total_corrigido += calc.get("valor_corrigido", 0) or 0
+        total_juros += calc.get("valor_juros_mora", 0) or 0
+        total_multa += calc.get("valor_multa", 0) or 0
+        total_geral_debitos += calc.get("valor_total", 0) or 0
+
+    # Calcula creditos (mesma logica)
+    creditos = data.get("creditos", [])
+    creditos_calculados = []
+    total_creditos = 0
+
+    for credito in creditos:
+        # Credito usa data_pagamento ao inves de data_vencimento
+        credito_calc = dict(credito)
+        credito_calc["data_vencimento"] = credito.get("data_pagamento")
+        calc = await calculate_debito(
+            credito_calc, termo_final, tipo_indice, tipo_juros_mora,
+            percentual_juros_mora, 0, capitalizar  # Credito sem multa
+        )
+        # Restaura data_pagamento
+        calc["data_pagamento"] = credito.get("data_pagamento")
+        creditos_calculados.append(calc)
+        total_creditos += calc.get("valor_total", 0) or 0
+
+    # Honorarios
+    honorarios = data.get("honorarios", [])
+    honorarios_calculados = []
+    total_honorarios = 0
+
+    base_honorarios = total_geral_debitos - total_creditos
+
+    for hon in honorarios:
+        hon_calc = dict(hon)
+        forma = hon.get("forma_calculo", "percentual")
+
+        if forma == "percentual":
+            perc = float(hon.get("percentual", 0) or 0)
+            valor_hon = base_honorarios * (perc / 100)
+        else:
+            valor_hon = float(hon.get("valor_fixo", 0) or 0)
+
+        hon_calc["valor_base"] = round(base_honorarios, 2)
+        hon_calc["valor_honorarios"] = round(valor_hon, 2)
+        honorarios_calculados.append(hon_calc)
+        total_honorarios += valor_hon
+
+    # Multa 523 CPC
+    valor_multa_523 = 0
+    valor_honorarios_523 = 0
+    if data.get("aplicar_multa_523"):
+        base_523 = total_geral_debitos - total_creditos
+        if data.get("aplicar_multa_moratoria_10"):
+            valor_multa_523 = base_523 * 0.10
+        if data.get("aplicar_honorarios_523_10"):
+            valor_honorarios_523 = base_523 * 0.10
+
+    # Totais
+    subtotal = total_geral_debitos - total_creditos + total_honorarios
+    valor_total_geral = subtotal + valor_multa_523 + valor_honorarios_523
+
+    # Atualiza data com valores calculados
+    data_calculado = dict(data)
+    data_calculado["debitos"] = debitos_calculados
+    data_calculado["creditos"] = creditos_calculados
+    data_calculado["honorarios"] = honorarios_calculados
+    data_calculado["valor_principal"] = round(total_principal, 2)
+    data_calculado["valor_corrigido_total"] = round(total_corrigido, 2)
+    data_calculado["valor_juros_mora"] = round(total_juros, 2)
+    data_calculado["valor_multa_total"] = round(total_multa, 2)
+    data_calculado["valor_honorarios_sucumbencia"] = round(total_honorarios, 2)
+    data_calculado["valor_multa_523"] = round(valor_multa_523, 2)
+    data_calculado["valor_honorarios_523"] = round(valor_honorarios_523, 2)
+    data_calculado["subtotal"] = round(subtotal, 2)
+    data_calculado["valor_total_geral"] = round(valor_total_geral, 2)
+
+    return data_calculado
+
+
 @router.get("/legal-calculations")
 async def list_legal_calculations(
     skip: int = 0,
@@ -3101,7 +3413,7 @@ async def create_legal_calculation(
     request: Request,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Cria novo calculo juridico"""
+    """Cria novo calculo juridico - CALCULA CORRECAO E JUROS"""
     import uuid
     import json
 
@@ -3112,32 +3424,30 @@ async def create_legal_calculation(
         data = await request.json()
         calc_id = str(uuid.uuid4())
 
-        # Campos principais
-        title = data.get("nome", "")
-        description = data.get("descricao", "")
-        calculation_type = data.get("indice_correcao", "ipca_e")
-        customer_id = data.get("customer_id")
+        # *** EXECUTA OS CALCULOS DE CORRECAO E JUROS ***
+        data_calculado = await calculate_all_debitos(data)
 
-        # Valores principais
-        principal_amount = 0.0
-        debitos = data.get("debitos", [])
-        for d in debitos:
-            val = d.get("valor_original", 0)
-            if isinstance(val, str):
-                val = float(val.replace(",", ".")) if val else 0
-            principal_amount += val
+        # Campos principais
+        title = data_calculado.get("nome", "")
+        description = data_calculado.get("descricao", "")
+        calculation_type = data_calculado.get("indice_correcao", "ipca_e")
+        customer_id = data_calculado.get("customer_id")
+
+        # Valores calculados
+        principal_amount = data_calculado.get("valor_principal", 0.0)
 
         # Datas
+        debitos = data_calculado.get("debitos", [])
         start_date = None
         if debitos:
             dates = [d.get("data_vencimento") for d in debitos if d.get("data_vencimento")]
             if dates:
                 start_date = to_date(min(dates))
 
-        end_date = to_date(data.get("termo_final"))
+        end_date = to_date(data_calculado.get("termo_final"))
 
-        # Armazena todos os dados no result_data (JSONB)
-        result_data = json.dumps(data)
+        # Armazena dados COM CALCULOS no result_data (JSONB)
+        result_data = json.dumps(data_calculado)
 
         await conn.execute("""
             INSERT INTO legal_calculations
@@ -3145,8 +3455,9 @@ async def create_legal_calculation(
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """, calc_id, title, description, calculation_type, principal_amount, start_date, end_date, result_data)
 
-        return {"id": calc_id, "message": "Calculo criado com sucesso"}
+        return {"id": calc_id, "message": "Calculo criado com sucesso", "data": data_calculado}
     except Exception as e:
+        logger.error(f"Erro ao criar calculo juridico: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao criar calculo: {str(e)}")
     finally:
         await conn.close()
@@ -3158,7 +3469,7 @@ async def update_legal_calculation(
     request: Request,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Atualiza calculo juridico existente"""
+    """Atualiza calculo juridico existente - RECALCULA CORRECAO E JUROS"""
     import json
 
     tenant, user = tenant_data
@@ -3172,31 +3483,29 @@ async def update_legal_calculation(
 
         data = await request.json()
 
-        # Campos principais
-        title = data.get("nome", "")
-        description = data.get("descricao", "")
-        calculation_type = data.get("indice_correcao", "ipca_e")
+        # *** EXECUTA OS CALCULOS DE CORRECAO E JUROS ***
+        data_calculado = await calculate_all_debitos(data)
 
-        # Valores principais
-        principal_amount = 0.0
-        debitos = data.get("debitos", [])
-        for d in debitos:
-            val = d.get("valor_original", 0)
-            if isinstance(val, str):
-                val = float(val.replace(",", ".")) if val else 0
-            principal_amount += val
+        # Campos principais
+        title = data_calculado.get("nome", "")
+        description = data_calculado.get("descricao", "")
+        calculation_type = data_calculado.get("indice_correcao", "ipca_e")
+
+        # Valores calculados
+        principal_amount = data_calculado.get("valor_principal", 0.0)
 
         # Datas
+        debitos = data_calculado.get("debitos", [])
         start_date = None
         if debitos:
             dates = [d.get("data_vencimento") for d in debitos if d.get("data_vencimento")]
             if dates:
                 start_date = to_date(min(dates))
 
-        end_date = to_date(data.get("termo_final"))
+        end_date = to_date(data_calculado.get("termo_final"))
 
-        # Armazena todos os dados no result_data (JSONB)
-        result_data = json.dumps(data)
+        # Armazena dados COM CALCULOS no result_data (JSONB)
+        result_data = json.dumps(data_calculado)
 
         await conn.execute("""
             UPDATE legal_calculations SET
