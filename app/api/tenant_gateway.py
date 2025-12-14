@@ -3174,29 +3174,117 @@ def calculate_interest_months(data_inicial, data_final):
     dias = (data_final - data_inicial).days
     return dias / 30.0
 
-def get_interest_rate(tipo_juros: str, percentual_personalizado=None):
-    """Retorna taxa de juros mensal"""
+def get_interest_rate_for_date(tipo_juros: str, data_ref, percentual_personalizado=None):
+    """
+    Retorna taxa de juros mensal conforme a data de referencia
+    Considera a Lei 14.905/2024 que altera as taxas a partir de 30/08/2024
+    Conforme DR Calc: 6% a.a anterior a 11/02/03; 12% a.a de 12/02/03 a 30/08/24; Taxa Legal a partir de 30/08/24
+    """
+    from datetime import date, datetime
+
+    if isinstance(data_ref, str):
+        data_ref = datetime.strptime(data_ref, "%Y-%m-%d").date()
+
+    marco_cc2002 = date(2003, 2, 12)  # Novo Código Civil entra em vigor
+    marco_lei_14905 = date(2024, 8, 30)  # Lei 14.905/2024
+
     if tipo_juros == "nao_aplicar":
         return 0.0
     elif tipo_juros == "fixos_1_mes":
         return 1.0
     elif tipo_juros == "fixos_0_5_mes":
         return 0.5
-    elif tipo_juros == "juros_legais_6_12":
-        return 1.0  # 12% a.a. = 1% a.m. (padrao pos-2003)
-    elif tipo_juros == "juros_legais_selic_lei_14905":
-        return 0.65  # Aproximado SELIC - IPCA
-    elif tipo_juros == "taxa_legal_selic_ipca":
-        return 0.65
+    elif tipo_juros in ["juros_legais_6_12", "juros_legais_selic_lei_14905", "taxa_legal_selic_ipca"]:
+        # Lei 14.905/2024: Taxa Legal = SELIC - IPCA a partir de 30/08/2024
+        if data_ref < marco_cc2002:
+            return 0.5  # 6% a.a. = 0.5% a.m. (antes do CC 2002)
+        elif data_ref < marco_lei_14905:
+            return 1.0  # 12% a.a. = 1% a.m. (CC 2002 até Lei 14.905)
+        else:
+            return 0.65  # ~7.8% a.a. = 0.65% a.m. (SELIC - IPCA aproximado)
     elif tipo_juros == "poupanca":
-        return 0.5  # Aproximado
+        return 0.5
     elif tipo_juros == "personalizado" and percentual_personalizado:
         return float(percentual_personalizado)
     return 0.0
 
+async def calculate_legal_interest_monthly(valor_base: float, data_inicial, data_final, tipo_juros: str,
+                                          percentual_personalizado=None, capitalizar=False):
+    """
+    Calcula juros mês a mês, aplicando a taxa correta para cada período.
+    Considera a Lei 14.905/2024 (30/08/2024) para aplicar taxas diferentes.
+    Compatível com DR Calc.
+    """
+    from datetime import date, datetime
+    from calendar import monthrange
+
+    if isinstance(data_inicial, str):
+        data_inicial = datetime.strptime(data_inicial, "%Y-%m-%d").date()
+    if isinstance(data_final, str):
+        data_final = datetime.strptime(data_final, "%Y-%m-%d").date()
+
+    if data_final <= data_inicial:
+        return {"percentual_total": 0.0, "valor_juros": 0.0}
+
+    percentual_total = 0.0
+    valor_juros = 0.0
+    valor_acumulado = valor_base
+
+    # Itera mês a mês do período
+    data_atual = data_inicial
+    while data_atual < data_final:
+        # Determina o último dia do mês atual
+        _, ultimo_dia = monthrange(data_atual.year, data_atual.month)
+        fim_mes = date(data_atual.year, data_atual.month, ultimo_dia)
+
+        # Data final do período deste mês (não pode ultrapassar data_final)
+        data_fim_periodo = min(fim_mes, data_final)
+
+        # Calcula dias neste mês
+        if data_atual == data_inicial:
+            # Primeiro mês: conta a partir do dia do vencimento
+            dias_no_mes = (data_fim_periodo - data_atual).days
+        else:
+            # Meses seguintes: mês completo ou até data_final
+            dias_no_mes = (data_fim_periodo - date(data_atual.year, data_atual.month, 1)).days + 1
+
+        if dias_no_mes <= 0:
+            break
+
+        # Fração do mês (considerando mês comercial de 30 dias)
+        fracao_mes = dias_no_mes / 30.0
+
+        # Determina a taxa aplicável para este mês
+        taxa_mes = get_interest_rate_for_date(tipo_juros, data_atual, percentual_personalizado)
+
+        # Calcula juros pro-rata para este mês
+        taxa_periodo = taxa_mes * fracao_mes
+        percentual_total += taxa_periodo
+
+        if capitalizar:
+            # Juros compostos: aplica sobre valor acumulado
+            juros_mes = valor_acumulado * (taxa_periodo / 100)
+            valor_juros += juros_mes
+            valor_acumulado += juros_mes
+        else:
+            # Juros simples: aplica sobre valor base original
+            juros_mes = valor_base * (taxa_periodo / 100)
+            valor_juros += juros_mes
+
+        # Avança para o próximo mês
+        if data_atual.month == 12:
+            data_atual = date(data_atual.year + 1, 1, 1)
+        else:
+            data_atual = date(data_atual.year, data_atual.month + 1, 1)
+
+    return {
+        "percentual_total": round(percentual_total, 2),
+        "valor_juros": round(valor_juros, 2)
+    }
+
 async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_juros_mora: str,
                           percentual_juros_mora=None, percentual_multa=0, capitalizar=False):
-    """Calcula um debito com correcao, juros e multa"""
+    """Calcula um debito com correcao, juros e multa - compatível com DR Calc"""
     from datetime import datetime
 
     valor_original = debito.get("valor_original", 0)
@@ -3219,18 +3307,27 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
     fator = await calculate_correction_factor(tipo_indice, data_vencimento, termo_final)
     valor_corrigido = valor_original * fator
 
-    # 2. Juros de Mora
-    taxa_mensal = get_interest_rate(tipo_juros_mora, percentual_juros_mora)
-    meses = calculate_interest_months(data_vencimento, termo_final)
-
-    if capitalizar and taxa_mensal > 0:
-        # Juros compostos
-        valor_juros = valor_corrigido * ((1 + taxa_mensal/100) ** meses - 1)
+    # 2. Juros de Mora - calcula mês a mês respeitando Lei 14.905/2024
+    if tipo_juros_mora == "nao_aplicar":
+        percentual_juros_total = 0.0
+        valor_juros = 0.0
+    elif percentual_juros_mora:
+        # Taxa fixa informada pelo usuário
+        meses = calculate_interest_months(data_vencimento, termo_final)
+        taxa = float(percentual_juros_mora)
+        percentual_juros_total = taxa * meses
+        if capitalizar:
+            valor_juros = valor_corrigido * ((1 + taxa/100) ** meses - 1)
+        else:
+            valor_juros = valor_corrigido * (taxa / 100) * meses
     else:
-        # Juros simples
-        valor_juros = valor_corrigido * (taxa_mensal / 100) * meses
-
-    percentual_juros_total = taxa_mensal * meses
+        # Taxa legal - calcular mês a mês (Lei 14.905/2024)
+        juros_result = await calculate_legal_interest_monthly(
+            valor_corrigido, data_vencimento, termo_final, tipo_juros_mora,
+            percentual_juros_mora, capitalizar
+        )
+        percentual_juros_total = juros_result["percentual_total"]
+        valor_juros = juros_result["valor_juros"]
 
     # 3. Multa
     percentual_multa_val = float(percentual_multa) if percentual_multa else 0
