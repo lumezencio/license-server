@@ -3084,12 +3084,18 @@ async def fetch_bcb_index(codigo_serie: int, data_inicio, data_fim):
 async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final):
     """
     Calcula fator de correcao monetaria entre duas datas
-    METODOLOGIA TJSP/DR Calc (atualizada Lei 14.905/2024):
-    - Primeiro mes: mes SEGUINTE ao vencimento (exclui o mes do vencimento)
+    METODOLOGIA compativel com DR Calc e Calculo Juridico:
+    - Primeiro mes: mes DO vencimento (INCLUI o mes do vencimento)
     - Ultimo mes: mes ANTERIOR ao termo
     - Para IPCA-E: usa IPCA-E ate agosto/2024 e IPCA-15 a partir de setembro/2024
       (conforme nova tabela pratica TJSP publicada em set/2024)
     - NAO projeta indices futuros - usa apenas indices publicados
+
+    REGRA CORRETA (igual economic_index_service.py que batia ate os centavos):
+    Exemplo: Vencimento 13/07/2023, Termo 13/12/2025
+    - Aplica indices de Jul/2023 (mes do vencimento) ate Nov/2025 (mes anterior ao termo)
+    - O indice de Nov/2025 atualiza o valor ATE Dez/2025
+
     Retorna 1 se nao houver correcao ou indice nao encontrado
     """
     from datetime import date, datetime
@@ -3105,12 +3111,10 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
     if isinstance(data_final, str):
         data_final = datetime.strptime(data_final, "%Y-%m-%d").date()
 
-    # METODOLOGIA TJSP: Primeiro mes = MES SEGUINTE ao vencimento
-    # Exemplo: vencimento 13/07/2023 -> primeiro indice = agosto/2023
-    if data_inicial.month == 12:
-        primeiro_mes = date(data_inicial.year + 1, 1, 1)
-    else:
-        primeiro_mes = date(data_inicial.year, data_inicial.month + 1, 1)
+    # METODOLOGIA CORRETA: Primeiro mes = MES DO vencimento (INCLUI)
+    # Exemplo: vencimento 13/07/2023 -> primeiro indice = julho/2023
+    # Esta e a metodologia que batia ate os centavos com DR Calc
+    primeiro_mes = date(data_inicial.year, data_inicial.month, 1)
 
     # METODOLOGIA TJSP: Ultimo mes = MES ANTERIOR ao termo
     # Exemplo: termo dezembro/2025 -> ultimo indice = novembro/2025
@@ -3206,8 +3210,10 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
         else:
             mes_atual = date(mes_atual.year, mes_atual.month + 1, 1)
 
-    logger.debug(f"Correcao {tipo_indice}: {primeiro_mes} a {ultimo_mes}, fator={fator:.6f}")
-    return fator
+    # Arredonda para 4 casas decimais (mesmo padrao do DR Calc e Calculo Juridico)
+    fator_arredondado = round(fator, 4)
+    logger.debug(f"Correcao {tipo_indice}: {primeiro_mes} a {ultimo_mes}, fator={fator:.6f} -> {fator_arredondado:.4f}")
+    return fator_arredondado
 
 def calculate_interest_months(data_inicial, data_final):
     """Calcula numero de meses entre duas datas (pro-rata 30 dias)"""
