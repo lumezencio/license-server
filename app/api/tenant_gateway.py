@@ -3394,7 +3394,7 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
 
     return {
         **debito,
-        "fator_correcao": round(fator, 6),
+        "fator_correcao": round(fator, 4),  # 4 casas decimais = padrao DR Calc
         "valor_corrigido": round(valor_corrigido, 2),
         "percentual_juros_mora": round(percentual_juros_total, 2),
         "valor_juros_mora": round(valor_juros, 2),
