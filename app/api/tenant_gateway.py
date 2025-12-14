@@ -703,6 +703,22 @@ def to_str(val):
         return None
     return str(val)
 
+def to_date(val):
+    """Converte string ISO para date object - asyncpg NAO aceita strings para campos DATE"""
+    from datetime import date, datetime
+    if val is None or val == '' or val == 'null':
+        return None
+    if isinstance(val, date):
+        return val
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, str):
+        if 'T' in val:
+            return datetime.fromisoformat(val.replace('Z', '+00:00')).date()
+        else:
+            return datetime.strptime(val, '%Y-%m-%d').date()
+    return None
+
 def generate_slug(name: str) -> str:
     """Gera um slug a partir do nome"""
     import re
