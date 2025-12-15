@@ -3547,15 +3547,16 @@ async def get_legal_calculation(
         # Converte row para dict
         result = row_to_dict(row)
 
-        # Extrai result_data (JSONB) e mescla com o resultado
+        # Extrai metadata_calculo (JSONB) e mescla com o resultado
         # O frontend espera os dados diretamente (nome, debitos, etc)
-        if result.get("result_data"):
-            result_data = result["result_data"]
+        # Tenta primeiro metadata_calculo (novo), depois result_data (legado)
+        metadata = result.get("metadata_calculo") or result.get("result_data")
+        if metadata:
             # Se for string, faz parse
-            if isinstance(result_data, str):
-                result_data = json.loads(result_data)
-            # Mescla os dados do result_data no resultado
-            result.update(result_data)
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            # Mescla os dados do metadata no resultado
+            result.update(metadata)
 
         return result
     finally:
@@ -3802,14 +3803,14 @@ async def recalculate_legal_calculation(
 
         result = row_to_dict(row)
 
-        # Extrai dados do result_data
+        # Extrai dados do metadata_calculo (ou result_data legado)
         data = {}
-        if result.get("result_data"):
-            result_data = result["result_data"]
-            if isinstance(result_data, str):
-                data = json.loads(result_data)
+        metadata = result.get("metadata_calculo") or result.get("result_data")
+        if metadata:
+            if isinstance(metadata, str):
+                data = json.loads(metadata)
             else:
-                data = result_data
+                data = metadata
 
         # *** RECALCULA COM INDICES ATUALIZADOS ***
         data_calculado = await calculate_all_debitos(data)
