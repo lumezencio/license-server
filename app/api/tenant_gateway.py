@@ -3600,14 +3600,66 @@ async def create_legal_calculation(
 
         end_date = to_date(data_calculado.get("termo_final"))
 
-        # Armazena dados COM CALCULOS no result_data (JSONB)
-        result_data = json.dumps(data_calculado)
+        # Armazena dados COM CALCULOS no metadata_calculo (JSONB)
+        metadata_calculo = json.dumps(data_calculado)
+
+        # Campos do calculo (usando nomes corretos da tabela)
+        nome = data_calculado.get("nome", "")
+        descricao = data_calculado.get("descricao", "")
+        numero_processo = data_calculado.get("numero_processo", "")
+        indice_correcao = data_calculado.get("indice_correcao", "ipca_e")
+        termo_final_dt = to_date(data_calculado.get("termo_final"))
+
+        # Opcoes de correcao monetaria
+        aplicar_variacoes_positivas = data_calculado.get("aplicar_variacoes_positivas", False)
+        usar_capitalizacao_simples = data_calculado.get("usar_capitalizacao_simples", False)
+        manter_valor_nominal_inflacao_negativa = data_calculado.get("manter_valor_nominal_inflacao_negativa", False)
+
+        # Juros de mora
+        tipo_juros_mora = data_calculado.get("tipo_juros_mora", "nao_aplicar")
+        percentual_juros_mora_val = to_decimal(data_calculado.get("percentual_juros_mora"))
+        juros_mora_a_partir_de = data_calculado.get("juros_mora_a_partir_de", "vencimento")
+        data_fixa_juros_mora = to_date(data_calculado.get("data_fixa_juros_mora"))
+        aplicar_juros_mora_pro_rata = data_calculado.get("aplicar_juros_mora_pro_rata", False)
+        capitalizar_juros_mora_mensal = data_calculado.get("capitalizar_juros_mora_mensal", False)
+
+        # Multa
+        percentual_multa_val = to_decimal(data_calculado.get("percentual_multa")) or 0
+        aplicar_multa_sobre_juros_mora = data_calculado.get("aplicar_multa_sobre_juros_mora", False)
+        aplicar_multa_sobre_juros_compensatorios = data_calculado.get("aplicar_multa_sobre_juros_compensatorios", False)
+        aplicar_multa_523 = data_calculado.get("aplicar_multa_523", False)
+
+        # Valores calculados
+        valor_total_geral = to_decimal(data_calculado.get("valor_total_geral")) or 0
+        valor_principal_calc = to_decimal(data_calculado.get("valor_principal")) or 0
+        valor_juros_mora_calc = to_decimal(data_calculado.get("valor_juros_mora")) or 0
+        valor_multa_calc = to_decimal(data_calculado.get("valor_multa")) or 0
+        valor_custas = to_decimal(data_calculado.get("valor_custas")) or 0
+        valor_despesas = to_decimal(data_calculado.get("valor_despesas")) or 0
+        valor_honorarios_sucumbencia = to_decimal(data_calculado.get("valor_honorarios_sucumbencia")) or 0
+        subtotal_val = to_decimal(data_calculado.get("subtotal")) or 0
 
         await conn.execute("""
             INSERT INTO legal_calculations
-            (id, title, description, calculation_type, principal_amount, start_date, end_date, result_data, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """, calc_id, title, description, calculation_type, principal_amount, start_date, end_date, result_data)
+            (id, nome, descricao, numero_processo, customer_id, termo_final, indice_correcao,
+             aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
+             tipo_juros_mora, percentual_juros_mora, juros_mora_a_partir_de, data_fixa_juros_mora,
+             aplicar_juros_mora_pro_rata, capitalizar_juros_mora_mensal,
+             percentual_multa, aplicar_multa_sobre_juros_mora, aplicar_multa_sobre_juros_compensatorios,
+             aplicar_multa_523,
+             valor_total_geral, valor_principal, valor_juros_mora, valor_multa,
+             valor_custas, valor_despesas, valor_honorarios_sucumbencia, subtotal,
+             metadata_calculo, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, calc_id, nome, descricao, numero_processo, customer_id, termo_final_dt, indice_correcao,
+             aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
+             tipo_juros_mora, percentual_juros_mora_val, juros_mora_a_partir_de, data_fixa_juros_mora,
+             aplicar_juros_mora_pro_rata, capitalizar_juros_mora_mensal,
+             percentual_multa_val, aplicar_multa_sobre_juros_mora, aplicar_multa_sobre_juros_compensatorios,
+             aplicar_multa_523,
+             valor_total_geral, valor_principal_calc, valor_juros_mora_calc, valor_multa_calc,
+             valor_custas, valor_despesas, valor_honorarios_sucumbencia, subtotal_val,
+             metadata_calculo)
 
         return {"id": calc_id, "message": "Calculo criado com sucesso", "data": data_calculado}
     except Exception as e:
@@ -3663,16 +3715,36 @@ async def update_legal_calculation(
 
         await conn.execute("""
             UPDATE legal_calculations SET
-                title = $1,
-                description = $2,
-                calculation_type = $3,
-                principal_amount = $4,
-                start_date = $5,
-                end_date = $6,
-                result_data = $7::jsonb,
+                nome = $1,
+                descricao = $2,
+                indice_correcao = $3,
+                valor_principal = $4,
+                valor_total_geral = $5,
+                valor_juros_mora = $6,
+                valor_multa = $7,
+                valor_custas = $8,
+                valor_despesas = $9,
+                valor_honorarios_sucumbencia = $10,
+                subtotal = $11,
+                termo_final = $12,
+                metadata_calculo = $13::jsonb,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = $8
-        """, title, description, calculation_type, principal_amount, start_date, end_date, result_data, calc_id)
+            WHERE id = $14
+        """, 
+            data_calculado.get('nome', ''),
+            data_calculado.get('descricao', ''),
+            data_calculado.get('indice_correcao', 'ipca_e'),
+            data_calculado.get('valor_principal', 0.0),
+            data_calculado.get('valor_total_geral', 0.0),
+            data_calculado.get('valor_juros_mora', 0.0),
+            data_calculado.get('valor_multa', 0.0),
+            data_calculado.get('valor_custas', 0.0),
+            data_calculado.get('valor_despesas', 0.0),
+            data_calculado.get('valor_honorarios_sucumbencia', 0.0),
+            data_calculado.get('subtotal', 0.0),
+            end_date,
+            result_data,
+            calc_id)
 
         return {"id": calc_id, "message": "Calculo atualizado com sucesso"}
     except HTTPException:
@@ -3751,16 +3823,36 @@ async def recalculate_legal_calculation(
 
         await conn.execute("""
             UPDATE legal_calculations SET
-                title = $1,
-                description = $2,
-                calculation_type = $3,
-                principal_amount = $4,
-                start_date = $5,
-                end_date = $6,
-                result_data = $7::jsonb,
+                nome = $1,
+                descricao = $2,
+                indice_correcao = $3,
+                valor_principal = $4,
+                valor_total_geral = $5,
+                valor_juros_mora = $6,
+                valor_multa = $7,
+                valor_custas = $8,
+                valor_despesas = $9,
+                valor_honorarios_sucumbencia = $10,
+                subtotal = $11,
+                termo_final = $12,
+                metadata_calculo = $13::jsonb,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = $8
-        """, title, description, calculation_type, principal_amount, start_date, end_date, result_data_json, calc_id)
+            WHERE id = $14
+        """, 
+            data_calculado.get('nome', ''),
+            data_calculado.get('descricao', ''),
+            data_calculado.get('indice_correcao', 'ipca_e'),
+            data_calculado.get('valor_principal', 0.0),
+            data_calculado.get('valor_total_geral', 0.0),
+            data_calculado.get('valor_juros_mora', 0.0),
+            data_calculado.get('valor_multa', 0.0),
+            data_calculado.get('valor_custas', 0.0),
+            data_calculado.get('valor_despesas', 0.0),
+            data_calculado.get('valor_honorarios_sucumbencia', 0.0),
+            data_calculado.get('subtotal', 0.0),
+            end_date,
+            result_data_json,
+            calc_id)
 
         return {"id": calc_id, "message": "Calculo recalculado com sucesso", "data": data_calculado}
     except HTTPException:
