@@ -3639,9 +3639,13 @@ async def create_legal_calculation(
         valor_honorarios_sucumbencia = to_decimal(data_calculado.get("valor_honorarios_sucumbencia")) or 0
         subtotal_val = to_decimal(data_calculado.get("subtotal")) or 0
 
+        # Data do calculo (hoje)
+        from datetime import date as dt_date
+        data_calculo = dt_date.today()
+
         await conn.execute("""
             INSERT INTO legal_calculations
-            (id, nome, descricao, numero_processo, customer_id, termo_final, indice_correcao,
+            (id, nome, descricao, numero_processo, customer_id, data_calculo, termo_final, indice_correcao,
              aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
              tipo_juros_mora, percentual_juros_mora, juros_mora_a_partir_de, data_fixa_juros_mora,
              aplicar_juros_mora_pro_rata, capitalizar_juros_mora_mensal,
@@ -3650,8 +3654,8 @@ async def create_legal_calculation(
              valor_total_geral, valor_principal, valor_juros_mora, valor_multa,
              valor_custas, valor_despesas, valor_honorarios_sucumbencia, subtotal,
              metadata_calculo, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """, calc_id, nome, descricao, numero_processo, customer_id, termo_final_dt, indice_correcao,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, calc_id, nome, descricao, numero_processo, customer_id, data_calculo, termo_final_dt, indice_correcao,
              aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
              tipo_juros_mora, percentual_juros_mora_val, juros_mora_a_partir_de, data_fixa_juros_mora,
              aplicar_juros_mora_pro_rata, capitalizar_juros_mora_mensal,
