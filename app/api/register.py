@@ -53,13 +53,17 @@ async def provision_with_retry(
     database_password: str,
     admin_email: str,
     admin_password: str,
-    admin_name: str
+    admin_name: str,
+    product_code: str = "enterprise"
 ) -> tuple[bool, str]:
     """
     Executa o provisionamento com sistema de retry automático.
 
     Tenta até MAX_PROVISION_RETRIES vezes antes de desistir.
     Aguarda RETRY_DELAY_SECONDS entre tentativas.
+
+    Args:
+        product_code: Código do produto (enterprise, condotech, etc.)
 
     Returns:
         tuple[bool, str]: (sucesso, mensagem)
@@ -68,7 +72,7 @@ async def provision_with_retry(
 
     for attempt in range(1, MAX_PROVISION_RETRIES + 1):
         try:
-            logger.info(f"[{tenant_code}] Tentativa {attempt}/{MAX_PROVISION_RETRIES} de provisionamento...")
+            logger.info(f"[{tenant_code}] Tentativa {attempt}/{MAX_PROVISION_RETRIES} de provisionamento ({product_code})...")
 
             success, message = await provisioning_service.provision_tenant(
                 tenant_code=tenant_code,
@@ -77,7 +81,8 @@ async def provision_with_retry(
                 database_password=database_password,
                 admin_email=admin_email,
                 admin_password=admin_password,
-                admin_name=admin_name
+                admin_name=admin_name,
+                product_code=product_code
             )
 
             if success:
@@ -202,6 +207,7 @@ async def register_trial(
         document=request.document,
         email=request.email,
         phone=request.phone,
+        product_code=request.product_code,  # Código do produto (enterprise, condotech, etc.)
         database_name=database_name,
         database_user=database_user,
         database_password=database_password,
@@ -273,7 +279,7 @@ async def register_trial(
 
     logger.info(f"Registros criados. Iniciando provisionamento do banco...")
 
-    # 11. PROVISIONAMENTO SÍNCRONO COM RETRY
+    # 11. PROVISIONAMENTO SÍNCRONO COM RETRY (usa schema do produto correto)
     provision_success, provision_message = await provision_with_retry(
         tenant_code=tenant_code,
         database_name=database_name,
@@ -281,7 +287,8 @@ async def register_trial(
         database_password=database_password,
         admin_email=request.email,
         admin_password=request.document,  # CPF/CNPJ como senha inicial
-        admin_name=request.name
+        admin_name=request.name,
+        product_code=request.product_code  # enterprise, condotech, etc.
     )
 
     # 12. Atualiza status baseado no resultado do provisionamento
@@ -378,7 +385,7 @@ async def retry_provision(
     tenant.status = TenantStatus.PROVISIONING.value
     await db.commit()
 
-    # Tenta provisionar novamente
+    # Tenta provisionar novamente (usa product_code do tenant)
     provision_success, provision_message = await provision_with_retry(
         tenant_code=tenant.tenant_code,
         database_name=tenant.database_name,
@@ -386,7 +393,8 @@ async def retry_provision(
         database_password=tenant.database_password,
         admin_email=tenant.email,
         admin_password=tenant.document,
-        admin_name=tenant.name
+        admin_name=tenant.name,
+        product_code=tenant.product_code or "enterprise"
     )
 
     if provision_success:

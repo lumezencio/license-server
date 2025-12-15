@@ -603,7 +603,7 @@ CREATE TABLE IF NOT EXISTS legal_calculations (
     calcular_juros_mora_sobre_compensatorios BOOLEAN DEFAULT FALSE,
     capitalizar_juros_mora_mensal BOOLEAN DEFAULT FALSE,
     -- Juros compensatórios
-    tipo_juros_compensatorios VARCHAR(50),
+    tipo_juros_compensatorios VARCHAR(50) NOT NULL DEFAULT 'nao_aplicar',
     percentual_juros_compensatorios DECIMAL(10,4) DEFAULT 0,
     juros_compensatorios_a_partir_de VARCHAR(50),
     data_fixa_juros_compensatorios DATE,
@@ -675,3 +675,669 @@ CREATE INDEX IF NOT EXISTS idx_employees_cpf ON employees(cpf);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
+
+# =====================================================
+# CONDOTECH - SISTEMA DE GESTÃO CONDOMINIAL
+# =====================================================
+CONDOTECH_SCHEMA_SQL = """
+-- =====================================================
+-- TIPOS ENUM - CONDOTECH
+-- =====================================================
+DO $$ BEGIN
+    CREATE TYPE user_role AS ENUM ('ADMIN', 'SINDICO', 'SUBSINDICO', 'CONSELHEIRO', 'PORTEIRO', 'MORADOR');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE unit_type AS ENUM ('APARTAMENTO', 'CASA', 'SALA_COMERCIAL', 'LOJA', 'GARAGEM', 'DEPOSITO');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE resident_type AS ENUM ('PROPRIETARIO', 'INQUILINO', 'DEPENDENTE', 'FUNCIONARIO');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE ticket_status AS ENUM ('ABERTO', 'EM_ANDAMENTO', 'AGUARDANDO', 'RESOLVIDO', 'FECHADO', 'CANCELADO');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE ticket_priority AS ENUM ('BAIXA', 'MEDIA', 'ALTA', 'URGENTE');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE ticket_category AS ENUM ('MANUTENCAO', 'BARULHO', 'SEGURANCA', 'LIMPEZA', 'FINANCEIRO', 'ADMINISTRATIVO', 'SUGESTAO', 'RECLAMACAO', 'OUTRO');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE financial_type AS ENUM ('RECEITA', 'DESPESA');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE financial_status AS ENUM ('PENDENTE', 'PAGO', 'ATRASADO', 'CANCELADO', 'PARCIAL');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE reservation_status AS ENUM ('PENDENTE', 'CONFIRMADA', 'CANCELADA', 'CONCLUIDA');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE communication_type AS ENUM ('AVISO', 'COMUNICADO', 'CONVOCACAO', 'REGULAMENTO', 'ATA');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE package_status AS ENUM ('RECEBIDO', 'AGUARDANDO', 'RETIRADO', 'DEVOLVIDO');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE pet_size AS ENUM ('PEQUENO', 'MEDIO', 'GRANDE');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE vehicle_type AS ENUM ('CARRO', 'MOTO', 'BICICLETA', 'OUTRO');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- =====================================================
+-- TABELA DE USUÁRIOS (USERS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Dados de login
+    email VARCHAR(255) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL,
+    -- Dados pessoais
+    name VARCHAR(255) NOT NULL,
+    cpf VARCHAR(14) UNIQUE,
+    phone VARCHAR(20),
+    avatar_url VARCHAR(500),
+    -- Permissões
+    role user_role DEFAULT 'MORADOR',
+    permissions JSONB,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    is_verified BOOLEAN DEFAULT FALSE NOT NULL,
+    -- Tokens
+    reset_token VARCHAR(255),
+    reset_token_expires_at TIMESTAMP,
+    -- Login tracking
+    failed_login_attempts INTEGER DEFAULT 0,
+    locked_until TIMESTAMP,
+    last_login_at TIMESTAMP,
+    -- Flag para trocar senha
+    must_change_password BOOLEAN DEFAULT TRUE
+);
+
+-- =====================================================
+-- TABELA DE CONDOMÍNIOS (CONDOMINIUMS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS condominiums (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Dados básicos
+    name VARCHAR(200) NOT NULL,
+    cnpj VARCHAR(20) UNIQUE,
+    -- Endereço
+    zip_code VARCHAR(10),
+    street VARCHAR(200),
+    number VARCHAR(10),
+    complement VARCHAR(100),
+    neighborhood VARCHAR(100),
+    city VARCHAR(100),
+    state VARCHAR(2),
+    -- Contato
+    email VARCHAR(255),
+    phone VARCHAR(20),
+    -- Administração
+    sindico_id VARCHAR(36) REFERENCES users(id),
+    administradora VARCHAR(200),
+    -- Configurações
+    taxa_condominio DECIMAL(10,2) DEFAULT 0,
+    dia_vencimento INTEGER DEFAULT 10,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- =====================================================
+-- TABELA DE BLOCOS/TORRES (BLOCKS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS blocks (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id) ON DELETE CASCADE,
+    -- Dados
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    floors INTEGER DEFAULT 1,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- =====================================================
+-- TABELA DE UNIDADES (UNITS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS units (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id) ON DELETE CASCADE,
+    block_id VARCHAR(36) REFERENCES blocks(id),
+    -- Identificação
+    number VARCHAR(20) NOT NULL,
+    floor INTEGER,
+    unit_type unit_type DEFAULT 'APARTAMENTO',
+    -- Área
+    area DECIMAL(10,2),
+    -- Frações
+    fracao_ideal DECIMAL(10,6),
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_rented BOOLEAN DEFAULT FALSE
+);
+
+-- =====================================================
+-- TABELA DE MORADORES (RESIDENTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS residents (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+    user_id VARCHAR(36) REFERENCES users(id),
+    -- Dados pessoais
+    name VARCHAR(255) NOT NULL,
+    cpf VARCHAR(14),
+    rg VARCHAR(20),
+    birth_date DATE,
+    -- Contato
+    email VARCHAR(255),
+    phone VARCHAR(20),
+    mobile VARCHAR(20),
+    -- Tipo
+    resident_type resident_type DEFAULT 'MORADOR',
+    is_primary BOOLEAN DEFAULT FALSE,
+    -- Datas
+    move_in_date DATE,
+    move_out_date DATE,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- TABELA DE VEÍCULOS (VEHICLES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS vehicles (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+    resident_id VARCHAR(36) REFERENCES residents(id),
+    -- Dados do veículo
+    vehicle_type vehicle_type DEFAULT 'CARRO',
+    brand VARCHAR(50),
+    model VARCHAR(50),
+    color VARCHAR(30),
+    plate VARCHAR(10) NOT NULL,
+    year INTEGER,
+    -- Vaga
+    parking_spot VARCHAR(20),
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    -- TAG/Controle
+    tag_number VARCHAR(50),
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- TABELA DE TICKETS/CHAMADOS (TICKETS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS tickets (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Identificação
+    ticket_number VARCHAR(20) UNIQUE NOT NULL,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    unit_id VARCHAR(36) REFERENCES units(id),
+    created_by VARCHAR(36) REFERENCES users(id),
+    assigned_to VARCHAR(36) REFERENCES users(id),
+    -- Dados do chamado
+    title VARCHAR(200) NOT NULL,
+    description TEXT NOT NULL,
+    category ticket_category DEFAULT 'OUTRO',
+    priority ticket_priority DEFAULT 'MEDIA',
+    status ticket_status DEFAULT 'ABERTO',
+    -- Datas
+    due_date DATE,
+    closed_at TIMESTAMP,
+    -- Resolução
+    resolution TEXT,
+    -- Anexos
+    attachments JSONB
+);
+
+-- =====================================================
+-- COMENTÁRIOS DE TICKETS (TICKET_COMMENTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS ticket_comments (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    ticket_id VARCHAR(36) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    user_id VARCHAR(36) REFERENCES users(id),
+    -- Conteúdo
+    content TEXT NOT NULL,
+    is_internal BOOLEAN DEFAULT FALSE,
+    -- Anexos
+    attachments JSONB
+);
+
+-- =====================================================
+-- COMUNICADOS (COMMUNICATIONS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS communications (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    created_by VARCHAR(36) REFERENCES users(id),
+    -- Dados
+    title VARCHAR(200) NOT NULL,
+    content TEXT NOT NULL,
+    communication_type communication_type DEFAULT 'AVISO',
+    -- Visibilidade
+    is_published BOOLEAN DEFAULT TRUE,
+    publish_date TIMESTAMP,
+    expire_date TIMESTAMP,
+    -- Notificações
+    send_email BOOLEAN DEFAULT FALSE,
+    send_push BOOLEAN DEFAULT FALSE,
+    -- Anexos
+    attachments JSONB
+);
+
+-- =====================================================
+-- ÁREAS COMUNS (COMMON_AREAS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS common_areas (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    -- Dados
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    capacity INTEGER,
+    -- Reservas
+    is_reservable BOOLEAN DEFAULT TRUE,
+    requires_approval BOOLEAN DEFAULT FALSE,
+    advance_days INTEGER DEFAULT 7,
+    max_hours INTEGER DEFAULT 4,
+    -- Taxa
+    reservation_fee DECIMAL(10,2) DEFAULT 0,
+    -- Horários
+    opens_at TIME,
+    closes_at TIME,
+    -- Regras
+    rules TEXT,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    -- Imagem
+    image_url VARCHAR(500)
+);
+
+-- =====================================================
+-- RESERVAS (RESERVATIONS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS reservations (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    common_area_id VARCHAR(36) NOT NULL REFERENCES common_areas(id),
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id),
+    resident_id VARCHAR(36) REFERENCES residents(id),
+    approved_by VARCHAR(36) REFERENCES users(id),
+    -- Datas
+    reservation_date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    -- Status
+    status reservation_status DEFAULT 'PENDENTE',
+    -- Aprovação
+    approved_at TIMESTAMP,
+    cancelled_at TIMESTAMP,
+    cancellation_reason TEXT,
+    -- Taxa
+    fee_amount DECIMAL(10,2) DEFAULT 0,
+    fee_paid BOOLEAN DEFAULT FALSE,
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- LANÇAMENTOS FINANCEIROS (FINANCIAL_ENTRIES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS financial_entries (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    unit_id VARCHAR(36) REFERENCES units(id),
+    created_by VARCHAR(36) REFERENCES users(id),
+    -- Identificação
+    reference VARCHAR(50),
+    description VARCHAR(200) NOT NULL,
+    -- Tipo
+    entry_type financial_type NOT NULL,
+    category VARCHAR(50),
+    -- Valores
+    amount DECIMAL(15,2) NOT NULL,
+    discount DECIMAL(15,2) DEFAULT 0,
+    interest DECIMAL(15,2) DEFAULT 0,
+    fine DECIMAL(15,2) DEFAULT 0,
+    total DECIMAL(15,2) NOT NULL,
+    -- Datas
+    due_date DATE NOT NULL,
+    payment_date DATE,
+    competence_date DATE,
+    -- Status
+    status financial_status DEFAULT 'PENDENTE',
+    -- Pagamento
+    payment_method VARCHAR(50),
+    -- Boleto
+    boleto_url VARCHAR(500),
+    boleto_code VARCHAR(100),
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- DOCUMENTOS (DOCUMENTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS documents (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    uploaded_by VARCHAR(36) REFERENCES users(id),
+    -- Dados
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    category VARCHAR(50),
+    -- Arquivo
+    file_url VARCHAR(500) NOT NULL,
+    file_name VARCHAR(200),
+    file_type VARCHAR(50),
+    file_size INTEGER,
+    -- Visibilidade
+    is_public BOOLEAN DEFAULT TRUE,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- =====================================================
+-- ENQUETES (POLLS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS polls (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    created_by VARCHAR(36) REFERENCES users(id),
+    -- Dados
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    -- Opções (JSON array)
+    options JSONB NOT NULL,
+    -- Configurações
+    allow_multiple BOOLEAN DEFAULT FALSE,
+    is_anonymous BOOLEAN DEFAULT FALSE,
+    -- Datas
+    start_date TIMESTAMP,
+    end_date TIMESTAMP,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_published BOOLEAN DEFAULT FALSE
+);
+
+-- =====================================================
+-- VOTOS DE ENQUETES (POLL_VOTES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS poll_votes (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    poll_id VARCHAR(36) NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id),
+    user_id VARCHAR(36) REFERENCES users(id),
+    -- Voto (índice da opção ou array para múltipla escolha)
+    selected_options JSONB NOT NULL,
+    -- Unicidade
+    UNIQUE(poll_id, unit_id)
+);
+
+-- =====================================================
+-- ENCOMENDAS/CORRESPONDÊNCIAS (PACKAGES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS packages (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id),
+    received_by VARCHAR(36) REFERENCES users(id),
+    delivered_by VARCHAR(36) REFERENCES users(id),
+    -- Dados
+    tracking_code VARCHAR(50),
+    sender VARCHAR(100),
+    carrier VARCHAR(50),
+    description TEXT,
+    -- Status
+    status package_status DEFAULT 'RECEBIDO',
+    -- Datas
+    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    delivered_at TIMESTAMP,
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- PETS (PETS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS pets (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+    resident_id VARCHAR(36) REFERENCES residents(id),
+    -- Dados
+    name VARCHAR(100) NOT NULL,
+    species VARCHAR(50) NOT NULL,
+    breed VARCHAR(50),
+    color VARCHAR(30),
+    size pet_size DEFAULT 'MEDIO',
+    birth_date DATE,
+    -- Documentação
+    vaccination_up_to_date BOOLEAN DEFAULT FALSE,
+    last_vaccination DATE,
+    microchip VARCHAR(50),
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    -- Foto
+    photo_url VARCHAR(500),
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- CONTATOS DE EMERGÊNCIA (EMERGENCY_CONTACTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS emergency_contacts (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    -- Dados
+    name VARCHAR(100) NOT NULL,
+    category VARCHAR(50),
+    phone VARCHAR(20) NOT NULL,
+    phone_secondary VARCHAR(20),
+    email VARCHAR(255),
+    address TEXT,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    -- Ordem de exibição
+    display_order INTEGER DEFAULT 0,
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- VISITANTES (VISITORS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS visitors (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    unit_id VARCHAR(36) NOT NULL REFERENCES units(id),
+    authorized_by VARCHAR(36) REFERENCES residents(id),
+    -- Dados do visitante
+    name VARCHAR(200) NOT NULL,
+    document VARCHAR(20),
+    phone VARCHAR(20),
+    vehicle_plate VARCHAR(10),
+    -- Autorização
+    visit_date DATE NOT NULL,
+    start_time TIME,
+    end_time TIME,
+    is_permanent BOOLEAN DEFAULT FALSE,
+    valid_until DATE,
+    -- Entrada/Saída
+    checked_in_at TIMESTAMP,
+    checked_out_at TIMESTAMP,
+    checked_by VARCHAR(36) REFERENCES users(id),
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- LOG DE ACESSOS (ACCESS_LOG)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS access_log (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    condominium_id VARCHAR(36) NOT NULL REFERENCES condominiums(id),
+    unit_id VARCHAR(36) REFERENCES units(id),
+    resident_id VARCHAR(36) REFERENCES residents(id),
+    visitor_id VARCHAR(36) REFERENCES visitors(id),
+    registered_by VARCHAR(36) REFERENCES users(id),
+    -- Dados
+    access_type VARCHAR(20) NOT NULL,
+    direction VARCHAR(10) NOT NULL,
+    access_point VARCHAR(50),
+    -- Veículo
+    vehicle_plate VARCHAR(10),
+    -- Observações
+    notes TEXT
+);
+
+-- =====================================================
+-- ÍNDICES PARA PERFORMANCE - CONDOTECH
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_cpf ON users(cpf);
+CREATE INDEX IF NOT EXISTS idx_condominiums_cnpj ON condominiums(cnpj);
+CREATE INDEX IF NOT EXISTS idx_blocks_condominium ON blocks(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_units_condominium ON units(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_units_block ON units(block_id);
+CREATE INDEX IF NOT EXISTS idx_residents_unit ON residents(unit_id);
+CREATE INDEX IF NOT EXISTS idx_residents_cpf ON residents(cpf);
+CREATE INDEX IF NOT EXISTS idx_vehicles_unit ON vehicles(unit_id);
+CREATE INDEX IF NOT EXISTS idx_vehicles_plate ON vehicles(plate);
+CREATE INDEX IF NOT EXISTS idx_tickets_condominium ON tickets(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_tickets_created_by ON tickets(created_by);
+CREATE INDEX IF NOT EXISTS idx_ticket_comments_ticket ON ticket_comments(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_communications_condominium ON communications(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_common_areas_condominium ON common_areas(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_area ON reservations(common_area_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_unit ON reservations(unit_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_date ON reservations(reservation_date);
+CREATE INDEX IF NOT EXISTS idx_financial_condominium ON financial_entries(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_financial_unit ON financial_entries(unit_id);
+CREATE INDEX IF NOT EXISTS idx_financial_due_date ON financial_entries(due_date);
+CREATE INDEX IF NOT EXISTS idx_financial_status ON financial_entries(status);
+CREATE INDEX IF NOT EXISTS idx_documents_condominium ON documents(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_polls_condominium ON polls(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
+CREATE INDEX IF NOT EXISTS idx_packages_condominium ON packages(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_packages_unit ON packages(unit_id);
+CREATE INDEX IF NOT EXISTS idx_packages_status ON packages(status);
+CREATE INDEX IF NOT EXISTS idx_pets_unit ON pets(unit_id);
+CREATE INDEX IF NOT EXISTS idx_emergency_contacts_condominium ON emergency_contacts(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_visitors_condominium ON visitors(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_visitors_unit ON visitors(unit_id);
+CREATE INDEX IF NOT EXISTS idx_visitors_date ON visitors(visit_date);
+CREATE INDEX IF NOT EXISTS idx_access_log_condominium ON access_log(condominium_id);
+CREATE INDEX IF NOT EXISTS idx_access_log_created ON access_log(created_at);
+"""
+
+# =====================================================
+# MAPEAMENTO DE PRODUTOS PARA SCHEMAS
+# =====================================================
+PRODUCT_SCHEMAS = {
+    "enterprise": TENANT_SCHEMA_SQL,
+    "tech-emp": TENANT_SCHEMA_SQL,
+    "condotech": CONDOTECH_SCHEMA_SQL,
+}
+
+def get_schema_for_product(product_code: str) -> str:
+    """Retorna o schema SQL apropriado para o produto especificado."""
+    return PRODUCT_SCHEMAS.get(product_code.lower(), TENANT_SCHEMA_SQL)

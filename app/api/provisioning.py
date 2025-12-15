@@ -69,7 +69,7 @@ async def provision_tenant_task(
             tenant.status = TenantStatus.PROVISIONING.value
             await db.commit()
 
-            # Executa provisionamento
+            # Executa provisionamento (usa o product_code do tenant)
             success, message = await provisioning_service.provision_tenant(
                 tenant_code=tenant.tenant_code,
                 database_name=tenant.database_name,
@@ -77,7 +77,8 @@ async def provision_tenant_task(
                 database_password=tenant.database_password,
                 admin_email=tenant.email,
                 admin_password=tenant.document,  # CPF/CNPJ como senha inicial
-                admin_name=tenant.name
+                admin_name=tenant.name,
+                product_code=tenant.product_code or "enterprise"
             )
 
             if success:
@@ -217,7 +218,7 @@ async def provision_tenant_sync(
     await db.commit()
 
     try:
-        # Executa provisionamento
+        # Executa provisionamento (usa o product_code do tenant)
         success, message = await provisioning_service.provision_tenant(
             tenant_code=tenant.tenant_code,
             database_name=tenant.database_name,
@@ -225,7 +226,8 @@ async def provision_tenant_sync(
             database_password=tenant.database_password,
             admin_email=tenant.email,
             admin_password=tenant.document,
-            admin_name=tenant.name
+            admin_name=tenant.name,
+            product_code=tenant.product_code or "enterprise"
         )
 
         if success:

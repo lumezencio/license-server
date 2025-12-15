@@ -15,6 +15,7 @@ class TenantRegisterRequest(BaseModel):
     document: str = Field(..., description="CPF ou CNPJ (apenas números)")
     phone: str = Field(..., description="Telefone (apenas números)")
     company_name: Optional[str] = Field(None, max_length=255, description="Nome fantasia")
+    product_code: str = Field(default="enterprise", description="Código do produto (enterprise, condotech, etc.)")
 
     @field_validator('document')
     @classmethod

@@ -10,7 +10,7 @@ import asyncpg
 import hashlib
 
 from .config import settings
-from .tenant_schema import TENANT_SCHEMA_SQL
+from .tenant_schema import TENANT_SCHEMA_SQL, get_schema_for_product, CONDOTECH_SCHEMA_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -197,20 +197,30 @@ class TenantProvisioningService:
         self,
         database_name: str,
         username: str,
-        password: str
+        password: str,
+        product_code: str = "enterprise"
     ) -> bool:
         """
-        Cria a estrutura de tabelas do enterprise_system no banco do tenant.
-        Usa o schema completo definido em tenant_schema.py que corresponde
-        exatamente à estrutura dos modelos do enterprise_system.
+        Cria a estrutura de tabelas no banco do tenant.
+        Usa o schema apropriado para o produto especificado.
+
+        Args:
+            database_name: Nome do banco
+            username: Usuário do banco
+            password: Senha do usuário
+            product_code: Código do produto (enterprise, condotech, etc.)
         """
         conn = await self._get_tenant_connection(database_name, username, password)
         try:
             # Habilita extensões necessárias
             await conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
 
-            # Usa o schema completo do tenant_schema.py
-            await conn.execute(TENANT_SCHEMA_SQL)
+            # Obtém o schema correto para o produto
+            schema_sql = get_schema_for_product(product_code)
+            logger.info(f"Usando schema do produto: {product_code}")
+
+            # Executa o schema
+            await conn.execute(schema_sql)
 
             # Concede permissões em todas as tabelas
             await conn.execute(f"""
@@ -234,16 +244,20 @@ class TenantProvisioningService:
         db_password: str,
         admin_email: str,
         admin_password: str,
-        admin_name: str
+        admin_name: str,
+        product_code: str = "enterprise"
     ) -> bool:
         """
         Cria o usuário administrador inicial no banco do tenant.
-        
+
         O usuário é criado com:
         - Email: email cadastrado
         - Senha: CPF/CNPJ (apenas números)
         - Role: admin
         - must_change_password: TRUE (força troca no primeiro login)
+
+        Args:
+            product_code: Código do produto para usar a estrutura correta
         """
         import uuid
         conn = await self._get_tenant_connection(database_name, db_username, db_password)
@@ -262,15 +276,27 @@ class TenantProvisioningService:
                 logger.info(f"Usuário admin {admin_email} já existe")
                 return True
 
-            # Insere usuário admin na tabela users (estrutura do enterprise_system)
-            await conn.execute("""
-                INSERT INTO users (
-                    id, email, hashed_password, full_name, role,
-                    is_active, is_verified, must_change_password,
-                    created_at, updated_at
-                )
-                VALUES ($1, $2, $3, $4, 'admin', TRUE, TRUE, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, user_id, admin_email, password_hash, admin_name)
+            # Insere usuário admin - estrutura diferente por produto
+            if product_code.lower() == "condotech":
+                # CondoTech: usa 'name' e 'role' como ENUM
+                await conn.execute("""
+                    INSERT INTO users (
+                        id, email, hashed_password, name, role,
+                        is_active, is_verified, must_change_password,
+                        created_at, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, 'ADMIN', TRUE, TRUE, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, user_id, admin_email, password_hash, admin_name)
+            else:
+                # Enterprise: usa 'full_name' e role como string
+                await conn.execute("""
+                    INSERT INTO users (
+                        id, email, hashed_password, full_name, role,
+                        is_active, is_verified, must_change_password,
+                        created_at, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, 'admin', TRUE, TRUE, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, user_id, admin_email, password_hash, admin_name)
 
             logger.info(f"Usuário admin {admin_email} criado com sucesso (ID: {user_id})")
             return True
@@ -289,7 +315,8 @@ class TenantProvisioningService:
         database_password: str,
         admin_email: str,
         admin_password: str,
-        admin_name: str
+        admin_name: str,
+        product_code: str = "enterprise"
     ) -> Tuple[bool, str]:
         """
         Executa o provisionamento completo de um tenant.
@@ -302,11 +329,12 @@ class TenantProvisioningService:
             admin_email: Email do admin inicial
             admin_password: Senha do admin (geralmente o CPF/CNPJ)
             admin_name: Nome do admin
+            product_code: Código do produto (enterprise, condotech, etc.)
 
         Returns:
             Tuple[bool, str]: (sucesso, mensagem)
         """
-        logger.info(f"Iniciando provisionamento do tenant {tenant_code}")
+        logger.info(f"Iniciando provisionamento do tenant {tenant_code} (produto: {product_code})")
 
         try:
             # 1. Criar usuário do banco
@@ -324,11 +352,11 @@ class TenantProvisioningService:
             # Aguarda um momento para o banco ser criado completamente
             await asyncio.sleep(1)
 
-            # 4. Criar estrutura de tabelas
-            logger.info(f"Criando estrutura de tabelas...")
-            await self.create_schema(database_name, database_user, database_password)
+            # 4. Criar estrutura de tabelas (usa schema do produto correto)
+            logger.info(f"Criando estrutura de tabelas para {product_code}...")
+            await self.create_schema(database_name, database_user, database_password, product_code)
 
-            # 5. Criar usuário admin
+            # 5. Criar usuário admin (usa estrutura do produto correto)
             logger.info(f"Criando usuário admin...")
             await self.create_admin_user(
                 database_name,
@@ -336,10 +364,11 @@ class TenantProvisioningService:
                 database_password,
                 admin_email,
                 admin_password,
-                admin_name
+                admin_name,
+                product_code
             )
 
-            logger.info(f"Provisionamento do tenant {tenant_code} concluído com sucesso!")
+            logger.info(f"Provisionamento do tenant {tenant_code} ({product_code}) concluído com sucesso!")
 
             return True, "Provisionamento concluído com sucesso"
 

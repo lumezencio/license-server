@@ -3623,6 +3623,10 @@ async def create_legal_calculation(
         aplicar_juros_mora_pro_rata = data_calculado.get("aplicar_juros_mora_pro_rata", False)
         capitalizar_juros_mora_mensal = data_calculado.get("capitalizar_juros_mora_mensal", False)
 
+        # Juros compensatorios (tipo_juros_compensatorios é NOT NULL!)
+        tipo_juros_compensatorios = data_calculado.get("tipo_juros_compensatorios", "nao_aplicar")
+        percentual_juros_compensatorios = to_decimal(data_calculado.get("percentual_juros_compensatorios")) or 0
+
         # Multa
         percentual_multa_val = to_decimal(data_calculado.get("percentual_multa")) or 0
         aplicar_multa_sobre_juros_mora = data_calculado.get("aplicar_multa_sobre_juros_mora", False)
@@ -3649,16 +3653,18 @@ async def create_legal_calculation(
              aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
              tipo_juros_mora, percentual_juros_mora, juros_mora_a_partir_de, data_fixa_juros_mora,
              aplicar_juros_mora_pro_rata, capitalizar_juros_mora_mensal,
+             tipo_juros_compensatorios, percentual_juros_compensatorios,
              percentual_multa, aplicar_multa_sobre_juros_mora, aplicar_multa_sobre_juros_compensatorios,
              aplicar_multa_523,
              valor_total_geral, valor_principal, valor_juros_mora, valor_multa,
              valor_custas, valor_despesas, valor_honorarios_sucumbencia, subtotal,
              metadata_calculo, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """, calc_id, nome, descricao, numero_processo, customer_id, data_calculo, termo_final_dt, indice_correcao,
              aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
              tipo_juros_mora, percentual_juros_mora_val, juros_mora_a_partir_de, data_fixa_juros_mora,
              aplicar_juros_mora_pro_rata, capitalizar_juros_mora_mensal,
+             tipo_juros_compensatorios, percentual_juros_compensatorios,
              percentual_multa_val, aplicar_multa_sobre_juros_mora, aplicar_multa_sobre_juros_compensatorios,
              aplicar_multa_523,
              valor_total_geral, valor_principal_calc, valor_juros_mora_calc, valor_multa_calc,

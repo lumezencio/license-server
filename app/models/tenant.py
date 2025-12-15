@@ -46,6 +46,9 @@ class Tenant(Base):
     email = Column(String(255), nullable=False, unique=True, index=True)
     phone = Column(String(20))
 
+    # Produto/Sistema
+    product_code = Column(String(50), default="enterprise")  # Código do produto (enterprise, condotech, etc.)
+
     # Configurações do banco de dados
     database_name = Column(String(100), unique=True)  # Nome do banco: cliente_{document}
     database_host = Column(String(255), default="localhost")
@@ -145,6 +148,7 @@ class Tenant(Base):
             "document": self.document,
             "email": self.email,
             "phone": self.phone,
+            "product_code": self.product_code,
             "subdomain": self.subdomain,
             "custom_domain": self.custom_domain,
             "status": self.status,
