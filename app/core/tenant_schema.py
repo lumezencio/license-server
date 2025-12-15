@@ -580,22 +580,22 @@ CREATE TABLE IF NOT EXISTS accounts_payable (
 -- =====================================================
 CREATE TABLE IF NOT EXISTS legal_calculations (
     id VARCHAR(36) PRIMARY KEY,
-    -- Identificação
-    nome VARCHAR(255),
+    -- Identificação (NOT NULL conforme produção)
+    nome VARCHAR(255) NOT NULL,
     descricao TEXT,
     numero_processo VARCHAR(100),
-    customer_id VARCHAR(36),
-    -- Datas
-    data_calculo DATE,
-    termo_final DATE,
-    -- Índice de correção
-    indice_correcao VARCHAR(50) DEFAULT 'ipca_e',
+    customer_id VARCHAR(36) NOT NULL,
+    -- Datas (NOT NULL conforme produção)
+    data_calculo DATE NOT NULL,
+    termo_final DATE NOT NULL,
+    -- Índice de correção (NOT NULL conforme produção)
+    indice_correcao VARCHAR(50) NOT NULL DEFAULT 'ipca_e',
     -- Opções de correção monetária
     aplicar_variacoes_positivas BOOLEAN DEFAULT TRUE,
     usar_capitalizacao_simples BOOLEAN DEFAULT FALSE,
     manter_valor_nominal_inflacao_negativa BOOLEAN DEFAULT TRUE,
-    -- Juros de mora
-    tipo_juros_mora VARCHAR(50) DEFAULT 'taxa_fixa',
+    -- Juros de mora (NOT NULL conforme produção)
+    tipo_juros_mora VARCHAR(50) NOT NULL DEFAULT 'nao_aplicar',
     percentual_juros_mora DECIMAL(10,4) DEFAULT 1.0,
     juros_mora_a_partir_de VARCHAR(50) DEFAULT 'vencimento',
     data_fixa_juros_mora DATE,
@@ -637,9 +637,9 @@ CREATE TABLE IF NOT EXISTS legal_calculations (
     subtotal DECIMAL(15,2) DEFAULT 0,
     -- Metadados (armazena débitos e detalhes completos)
     metadata_calculo JSONB,
-    -- Auditoria
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Auditoria (NOT NULL conforme produção)
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(36),
     updated_by VARCHAR(36),
     deleted_at TIMESTAMP,
