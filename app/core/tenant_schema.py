@@ -580,8 +580,6 @@ CREATE TABLE IF NOT EXISTS accounts_payable (
 -- =====================================================
 CREATE TABLE IF NOT EXISTS legal_calculations (
     id VARCHAR(36) PRIMARY KEY,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Identificação
     nome VARCHAR(255),
     descricao TEXT,
@@ -602,40 +600,52 @@ CREATE TABLE IF NOT EXISTS legal_calculations (
     juros_mora_a_partir_de VARCHAR(50) DEFAULT 'vencimento',
     data_fixa_juros_mora DATE,
     aplicar_juros_mora_pro_rata BOOLEAN DEFAULT TRUE,
+    calcular_juros_mora_sobre_compensatorios BOOLEAN DEFAULT FALSE,
     capitalizar_juros_mora_mensal BOOLEAN DEFAULT FALSE,
     -- Juros compensatórios
-    aplicar_juros_compensatorios BOOLEAN DEFAULT FALSE,
     tipo_juros_compensatorios VARCHAR(50),
     percentual_juros_compensatorios DECIMAL(10,4) DEFAULT 0,
     juros_compensatorios_a_partir_de VARCHAR(50),
     data_fixa_juros_compensatorios DATE,
-    aplicar_juros_compensatorios_pro_rata BOOLEAN DEFAULT TRUE,
     capitalizar_juros_compensatorios_mensal BOOLEAN DEFAULT FALSE,
     -- Multa
     percentual_multa DECIMAL(10,4) DEFAULT 0,
     aplicar_multa_sobre_juros_mora BOOLEAN DEFAULT FALSE,
     aplicar_multa_sobre_juros_compensatorios BOOLEAN DEFAULT FALSE,
+    aplicar_multa_nos_creditos BOOLEAN DEFAULT FALSE,
     aplicar_multa_523 BOOLEAN DEFAULT FALSE,
+    aplicar_multa_moratoria_10 BOOLEAN DEFAULT FALSE,
+    aplicar_honorarios_523_10 BOOLEAN DEFAULT FALSE,
+    incluir_juros_mora_multa_523 BOOLEAN DEFAULT FALSE,
+    incluir_custas_multa_523 BOOLEAN DEFAULT FALSE,
+    incluir_honorarios_sucumbenciais_multa_523 BOOLEAN DEFAULT FALSE,
+    incluir_multa_base_multa_523 BOOLEAN DEFAULT FALSE,
+    incluir_juros_compensatorios_multa_523 BOOLEAN DEFAULT FALSE,
+    -- Status
+    status VARCHAR(50) DEFAULT 'ativo',
     -- Valores calculados
     valor_total_geral DECIMAL(15,2) DEFAULT 0,
     valor_principal DECIMAL(15,2) DEFAULT 0,
-    valor_correcao_monetaria DECIMAL(15,2) DEFAULT 0,
     valor_juros_mora DECIMAL(15,2) DEFAULT 0,
     valor_juros_compensatorios DECIMAL(15,2) DEFAULT 0,
     valor_multa DECIMAL(15,2) DEFAULT 0,
-    valor_multa_523 DECIMAL(15,2) DEFAULT 0,
     valor_custas DECIMAL(15,2) DEFAULT 0,
     valor_despesas DECIMAL(15,2) DEFAULT 0,
     valor_honorarios_sucumbencia DECIMAL(15,2) DEFAULT 0,
+    valor_honorarios_contratuais DECIMAL(15,2) DEFAULT 0,
+    valor_multa_523 DECIMAL(15,2) DEFAULT 0,
     subtotal DECIMAL(15,2) DEFAULT 0,
     -- Metadados (armazena débitos e detalhes completos)
     metadata_calculo JSONB,
-    -- Campos legados (mantidos para compatibilidade)
-    result_data JSONB,
-    principal_amount DECIMAL(15,2),
-    start_date DATE,
-    end_date DATE,
-    calculation_type VARCHAR(50)
+    -- Auditoria
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(36),
+    updated_by VARCHAR(36),
+    deleted_at TIMESTAMP,
+    deleted_by VARCHAR(36),
+    -- Campo adicional
+    data_corte_juros_mora DATE
 );
 
 -- =====================================================
