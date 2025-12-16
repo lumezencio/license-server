@@ -7,6 +7,7 @@ from .register import router as register_router
 from .provisioning import router as provisioning_router
 from .tenant_auth import router as tenant_auth_router
 from .tenant_gateway import router as tenant_gateway_router
+from .payments import router as payments_router
 
 __all__ = [
     "auth_router",
@@ -17,5 +18,6 @@ __all__ = [
     "register_router",
     "provisioning_router",
     "tenant_auth_router",
-    "tenant_gateway_router"
+    "tenant_gateway_router",
+    "payments_router"
 ]

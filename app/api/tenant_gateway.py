@@ -3532,7 +3532,7 @@ async def get_legal_calculation(
     calc_id: str,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Busca calculo juridico por ID - retorna dados do result_data mesclados"""
+    """Busca calculo juridico por ID - retorna dados do result_data mesclados + dados do cliente"""
     import json
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
@@ -3557,6 +3557,16 @@ async def get_legal_calculation(
                 metadata = json.loads(metadata)
             # Mescla os dados do metadata no resultado
             result.update(metadata)
+
+        # Busca dados do cliente se houver customer_id
+        customer_id = result.get("customer_id")
+        if customer_id:
+            customer_row = await conn.fetchrow("""
+                SELECT id, first_name, last_name, company_name, trade_name, cpf_cnpj, email, phone
+                FROM customers WHERE id = $1
+            """, customer_id)
+            if customer_row:
+                result["customer"] = row_to_dict(customer_row)
 
         return result
     finally:

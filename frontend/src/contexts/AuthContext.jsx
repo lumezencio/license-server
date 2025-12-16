@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authService } from '../services/api';
 
 const AuthContext = createContext(null);
@@ -6,36 +6,59 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
 
+  // Verifica autenticação apenas uma vez na montagem
   useEffect(() => {
-    const token = localStorage.getItem('admin_token');
-    if (token) {
-      authService.me()
-        .then(setUser)
-        .catch(() => {
-          localStorage.removeItem('admin_token');
-        })
-        .finally(() => setLoading(false));
-    } else {
-      setLoading(false);
-    }
-  }, []);
+    if (authChecked) return;
 
-  const login = async (email, password) => {
+    const checkAuth = async () => {
+      const token = localStorage.getItem('admin_token');
+
+      if (!token) {
+        setLoading(false);
+        setAuthChecked(true);
+        return;
+      }
+
+      try {
+        const userData = await authService.me();
+        setUser(userData);
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        localStorage.removeItem('admin_token');
+        setUser(null);
+      } finally {
+        setLoading(false);
+        setAuthChecked(true);
+      }
+    };
+
+    checkAuth();
+  }, [authChecked]);
+
+  const login = useCallback(async (email, password) => {
     const data = await authService.login(email, password);
     localStorage.setItem('admin_token', data.access_token);
-    const user = await authService.me();
-    setUser(user);
-    return user;
-  };
+    setUser(data.user);
+    return data.user;
+  }, []);
 
-  const logout = () => {
+  const logout = useCallback(() => {
     localStorage.removeItem('admin_token');
     setUser(null);
+  }, []);
+
+  const value = {
+    user,
+    loading,
+    login,
+    logout,
+    isAuthenticated: !!user
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

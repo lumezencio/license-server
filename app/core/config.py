@@ -53,8 +53,16 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "admin@license-server.com"
     ADMIN_PASSWORD: str = "change-me-in-production"
 
-    # CORS
-    CORS_ORIGINS: list = ["*"]
+    # CORS - URLs específicas para allow_credentials=True
+    CORS_ORIGINS: list = [
+        "https://www.tech-emp.com",
+        "https://tech-emp.com",
+        "https://admin.tech-emp.com",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000"
+    ]
 
     # Email Settings (SMTP)
     SMTP_HOST: str = "smtp.gmail.com"
@@ -80,6 +88,12 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "postgres"
     POSTGRES_DATABASE: str = "postgres"
+
+    # Mercado Pago
+    MP_ACCESS_TOKEN: str = ""  # Access Token do Mercado Pago
+    MP_PUBLIC_KEY: str = ""    # Public Key do Mercado Pago
+    MP_WEBHOOK_SECRET: str = ""  # Secret para validar webhooks (assinatura secreta)
+    MP_SANDBOX: bool = True    # True = ambiente de teste, False = produção
 
     class Config:
         extra = "ignore"

@@ -18,13 +18,15 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Interceptor para tratar erros
+// Interceptor para tratar erros - SEM REDIRECT AUTOMÁTICO
+// O redirect é feito pelo React Router no PrivateRoute
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
+      // Apenas remove o token, não faz redirect
+      // O redirect será tratado pelo AuthContext/PrivateRoute
       localStorage.removeItem('admin_token');
-      window.location.href = '/login';
     }
     return Promise.reject(error);
   }
