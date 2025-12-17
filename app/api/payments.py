@@ -418,7 +418,8 @@ async def payment_webhook(
                     if license:
                         license.expires_at = new_expires
                         license.is_trial = False
-                        logger.info(f"License {license.license_key} sincronizada até {new_expires}")
+                        license.plan = "premium"  # Atualiza plano para premium após pagamento
+                        logger.info(f"License {license.license_key} sincronizada até {new_expires}, plan=premium")
 
                 logger.info(f"Tenant {tenant.tenant_code} - Período estendido até {new_expires}")
 
@@ -580,7 +581,8 @@ async def simulate_payment_approval(
             if license:
                 license.expires_at = new_expires
                 license.is_trial = False
-                logger.info(f"[SIMULADO] License {license.license_key} sincronizada até {new_expires}")
+                license.plan = "premium"  # Atualiza plano para premium após pagamento
+                logger.info(f"[SIMULADO] License {license.license_key} sincronizada até {new_expires}, plan=premium")
 
         await db.commit()
 
