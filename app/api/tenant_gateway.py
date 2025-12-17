@@ -704,19 +704,67 @@ def to_str(val):
     return str(val)
 
 def to_date(val):
-    """Converte string ISO para date object - asyncpg NAO aceita strings para campos DATE"""
+    """Converte string ISO para date object - asyncpg NAO aceita strings para campos DATE
+
+    VALIDACAO ROBUSTA: Verifica formato e valores plausiveis antes de converter.
+    Evita erros como '20252-01-01' (ano invalido) ou '2025-13-45' (mes/dia invalido).
+    """
     from datetime import date, datetime
+    import re
+
     if val is None or val == '' or val == 'null':
         return None
-    if isinstance(val, date):
+    if isinstance(val, date) and not isinstance(val, datetime):
         return val
     if isinstance(val, datetime):
         return val.date()
     if isinstance(val, str):
+        val = val.strip()
+
+        # Regex para validar formato YYYY-MM-DD (com ou sem timestamp)
+        date_pattern = r'^(\d{4})-(\d{2})-(\d{2})'
+
         if 'T' in val:
-            return datetime.fromisoformat(val.replace('Z', '+00:00')).date()
+            # Formato ISO com timestamp: 2025-01-15T00:00:00Z
+            match = re.match(date_pattern, val)
+            if not match:
+                raise ValueError(f"Formato de data invalido: '{val}'. Use YYYY-MM-DD ou YYYY-MM-DDTHH:MM:SS")
+
+            year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+            # Validacao de valores plausiveis
+            if year < 1900 or year > 2100:
+                raise ValueError(f"Ano invalido: {year}. O ano deve estar entre 1900 e 2100")
+            if month < 1 or month > 12:
+                raise ValueError(f"Mes invalido: {month}. O mes deve estar entre 1 e 12")
+            if day < 1 or day > 31:
+                raise ValueError(f"Dia invalido: {day}. O dia deve estar entre 1 e 31")
+
+            try:
+                return datetime.fromisoformat(val.replace('Z', '+00:00')).date()
+            except ValueError as e:
+                raise ValueError(f"Data invalida: '{val}'. Verifique se a data existe (ex: 30/02 nao existe)")
         else:
-            return datetime.strptime(val, '%Y-%m-%d').date()
+            # Formato simples: 2025-01-15
+            match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', val)
+            if not match:
+                raise ValueError(f"Formato de data invalido: '{val}'. Use o formato YYYY-MM-DD (ex: 2025-01-15)")
+
+            year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+            # Validacao de valores plausiveis
+            if year < 1900 or year > 2100:
+                raise ValueError(f"Ano invalido: {year}. O ano deve estar entre 1900 e 2100")
+            if month < 1 or month > 12:
+                raise ValueError(f"Mes invalido: {month}. O mes deve estar entre 1 e 12")
+            if day < 1 or day > 31:
+                raise ValueError(f"Dia invalido: {day}. O dia deve estar entre 1 e 31")
+
+            try:
+                return date(year, month, day)
+            except ValueError as e:
+                raise ValueError(f"Data invalida: '{val}'. Verifique se a data existe (ex: 30/02 nao existe)")
+
     return None
 
 def generate_slug(name: str) -> str:
