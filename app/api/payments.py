@@ -378,50 +378,52 @@ async def payment_webhook(
 
         # Se pagamento aprovado, estende o período do tenant
         if mp_status == "approved":
-            transaction.paid_at = datetime.utcnow()
+            # PROTEÇÃO: Só processa se ainda não foi processado (evita duplicação quando MP envia múltiplos webhooks)
+            if transaction.paid_at is None:
+                transaction.paid_at = datetime.utcnow()
 
-            # Busca o tenant
-            result = await db.execute(
-                select(Tenant).where(Tenant.id == transaction.tenant_id)
-            )
-            tenant = result.scalar_one_or_none()
+                # Busca o tenant
+                result = await db.execute(
+                    select(Tenant).where(Tenant.id == transaction.tenant_id)
+                )
+                tenant = result.scalar_one_or_none()
 
-            if tenant:
-                now = datetime.utcnow()
-                days_to_add = transaction.days_purchased
+                if tenant:
+                    now = datetime.utcnow()
+                    days_to_add = transaction.days_purchased
 
-                # LÓGICA DE SOMA: Se ainda tem dias restantes, soma. Senão, começa de hoje.
-                if tenant.trial_expires_at and tenant.trial_expires_at > now:
-                    # Ainda tem tempo válido - SOMA
-                    new_expires = tenant.trial_expires_at + timedelta(days=days_to_add)
-                    transaction.period_start = tenant.trial_expires_at
-                else:
-                    # Expirado ou nunca teve - começa de hoje
-                    new_expires = now + timedelta(days=days_to_add)
-                    transaction.period_start = now
+                    # LÓGICA DE SOMA: Se ainda tem dias restantes, soma. Senão, começa de hoje.
+                    if tenant.trial_expires_at and tenant.trial_expires_at > now:
+                        # Ainda tem tempo válido - SOMA
+                        new_expires = tenant.trial_expires_at + timedelta(days=days_to_add)
+                        transaction.period_start = tenant.trial_expires_at
+                    else:
+                        # Expirado ou nunca teve - começa de hoje
+                        new_expires = now + timedelta(days=days_to_add)
+                        transaction.period_start = now
 
-                transaction.period_end = new_expires
-                tenant.trial_expires_at = new_expires
+                    transaction.period_end = new_expires
+                    tenant.trial_expires_at = new_expires
 
-                # Se era trial, agora é cliente pagante
-                if tenant.is_trial:
-                    tenant.is_trial = False
-                    tenant.status = TenantStatus.ACTIVE.value
+                    # Se era trial, agora é cliente pagante
+                    if tenant.is_trial:
+                        tenant.is_trial = False
+                        tenant.status = TenantStatus.ACTIVE.value
 
-                # SINCRONIZA tabela licenses (usada pelo LicenseBadge no frontend)
-                if tenant.client_id:
-                    from app.models import License
-                    license_result = await db.execute(
-                        select(License).where(License.client_id == tenant.client_id)
-                    )
-                    license = license_result.scalar_one_or_none()
-                    if license:
-                        license.expires_at = new_expires
-                        license.is_trial = False
-                        license.plan = "premium"  # Atualiza plano para premium após pagamento
-                        logger.info(f"License {license.license_key} sincronizada até {new_expires}, plan=premium")
+                    # SINCRONIZA tabela licenses (usada pelo LicenseBadge no frontend)
+                    if tenant.client_id:
+                        from app.models import License
+                        license_result = await db.execute(
+                            select(License).where(License.client_id == tenant.client_id)
+                        )
+                        license = license_result.scalar_one_or_none()
+                        if license:
+                            license.expires_at = new_expires
+                            license.is_trial = False
+                            license.plan = "premium"  # Atualiza plano para premium após pagamento
+                            logger.info(f"License {license.license_key} sincronizada até {new_expires}, plan=premium")
 
-                logger.info(f"Tenant {tenant.tenant_code} - Período estendido até {new_expires}")
+                    logger.info(f"Tenant {tenant.tenant_code} - Período estendido até {new_expires}")
 
         await db.commit()
         logger.info(f"Transação {transaction_id} atualizada: status={transaction.status}")
@@ -537,6 +539,13 @@ async def simulate_payment_approval(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Transação não encontrada"
+        )
+
+    # PROTEÇÃO: Verifica se já foi processado
+    if transaction.paid_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pagamento já foi processado anteriormente"
         )
 
     # Simula aprovação
