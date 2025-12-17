@@ -237,6 +237,17 @@ async def update_license(
         }
         license.signature = rsa_manager.sign_license(license_data)
 
+    # SINCRONIZA com tabela tenants se expires_at foi alterado
+    if 'expires_at' in update_data and update_data['expires_at'] is not None:
+        from app.models import Tenant
+        tenant_result = await db.execute(
+            select(Tenant).where(Tenant.client_id == license.client_id)
+        )
+        tenant = tenant_result.scalar_one_or_none()
+        if tenant:
+            tenant.trial_expires_at = license.expires_at
+            tenant.updated_at = datetime.utcnow()
+
     await db.commit()
     await db.refresh(license)
 
