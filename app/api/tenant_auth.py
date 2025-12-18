@@ -211,8 +211,8 @@ async def verify_tenant_user(
 @router.post("/login", response_model=TenantLoginResponse)
 @limiter.limit("5/minute")
 async def tenant_login(
-    request: TenantLoginRequest,
-    req: Request,
+    login_data: TenantLoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -224,8 +224,8 @@ async def tenant_login(
     3. Valida credenciais no banco do tenant
     4. Retorna informacoes de acesso
     """
-    email = request.email.lower()
-    client_ip = get_remote_address(req)
+    email = login_data.email.lower()
+    client_ip = get_remote_address(request)
 
     # 0. Verifica se IP/email esta bloqueado por tentativas falhas
     is_locked, remaining_seconds = login_tracker.is_locked(client_ip, email)
@@ -262,7 +262,7 @@ async def tenant_login(
                 t.database_user,
                 t.database_password,
                 email,
-                request.password
+                login_data.password
             )
             if user:
                 tenant = t
@@ -368,7 +368,7 @@ async def tenant_login(
         tenant.database_user,
         tenant.database_password,
         email,
-        request.password
+        login_data.password
     )
 
     # Se nao autenticou e senha nunca foi trocada, tenta com documento
@@ -384,7 +384,7 @@ async def tenant_login(
             tenant.document
         )
 
-        if user and request.password == tenant.document:
+        if user and login_data.password == tenant.document:
             # Usuario logou com senha inicial
             pass
         elif user:
