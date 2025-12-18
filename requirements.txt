@@ -31,6 +31,9 @@ aiofiles>=23.2.1
 # Payment Gateway
 mercadopago>=2.2.0
 
+# Rate Limiting
+slowapi>=0.1.9
+
 # Utils
 python-dateutil>=2.8.2
 uuid6>=2023.5.2

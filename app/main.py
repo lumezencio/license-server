@@ -3,9 +3,11 @@ License Server - Main Application
 Sistema de licenciamento profissional com RSA
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 import os
 
 from app.core import settings
@@ -22,6 +24,12 @@ from app.api import (
     tenant_gateway_router,
     payments_router
 )
+
+# Rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from app.api.tenant_auth import limiter
 
 
 @asynccontextmanager
@@ -41,6 +49,23 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
 
 
+# Middleware de headers de seguranca
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adiciona headers de seguranca em todas as respostas"""
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Headers de seguranca (nao quebra CORS)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # Cache control para endpoints de autenticacao
+        if "/auth" in request.url.path or "/login" in request.url.path:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
 # Cria aplicação
 app = FastAPI(
     title=settings.APP_NAME,
@@ -51,7 +76,14 @@ app = FastAPI(
     redoc_url="/redoc" if settings.DEBUG else None
 )
 
-# CORS
+# Configura rate limiter na aplicacao
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Headers de seguranca (adicionar ANTES do CORS)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS (deve vir DEPOIS dos headers de seguranca)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,

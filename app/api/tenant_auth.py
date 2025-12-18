@@ -3,7 +3,7 @@ License Server - Tenant Authentication API
 Sistema de login unico multi-tenant
 """
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel, EmailStr
@@ -16,7 +16,60 @@ from app.models import Tenant, TenantStatus, License, LicenseStatus
 from app.core import settings, create_access_token
 import logging
 
+# Rate limiting
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 logger = logging.getLogger(__name__)
+
+# Limiter para protecao contra brute force
+limiter = Limiter(key_func=get_remote_address)
+
+# Cache simples para rastrear tentativas falhas por IP/email (em memoria)
+# Em producao com multiplas instancias, usar Redis
+from collections import defaultdict
+import time
+
+class LoginAttemptTracker:
+    """Rastreia tentativas de login falhas para protecao contra brute force"""
+    def __init__(self, max_attempts: int = 5, lockout_minutes: int = 15):
+        self.max_attempts = max_attempts
+        self.lockout_seconds = lockout_minutes * 60
+        self.attempts = defaultdict(list)  # key -> list of timestamps
+
+    def _clean_old_attempts(self, key: str):
+        """Remove tentativas antigas (mais de lockout_seconds)"""
+        now = time.time()
+        self.attempts[key] = [t for t in self.attempts[key] if now - t < self.lockout_seconds]
+
+    def record_failed_attempt(self, ip: str, email: str):
+        """Registra uma tentativa falha"""
+        key = f"{ip}:{email.lower()}"
+        self._clean_old_attempts(key)
+        self.attempts[key].append(time.time())
+
+    def is_locked(self, ip: str, email: str) -> tuple[bool, int]:
+        """
+        Verifica se IP/email esta bloqueado.
+        Returns: (is_locked, remaining_seconds)
+        """
+        key = f"{ip}:{email.lower()}"
+        self._clean_old_attempts(key)
+
+        if len(self.attempts[key]) >= self.max_attempts:
+            oldest = min(self.attempts[key])
+            remaining = int(self.lockout_seconds - (time.time() - oldest))
+            if remaining > 0:
+                return True, remaining
+        return False, 0
+
+    def clear_attempts(self, ip: str, email: str):
+        """Limpa tentativas apos login bem-sucedido"""
+        key = f"{ip}:{email.lower()}"
+        self.attempts.pop(key, None)
+
+# Instancia global do tracker
+login_tracker = LoginAttemptTracker(max_attempts=5, lockout_minutes=15)
 
 router = APIRouter(prefix="/tenant-auth", tags=["Tenant Authentication"])
 
@@ -156,8 +209,10 @@ async def verify_tenant_user(
 
 
 @router.post("/login", response_model=TenantLoginResponse)
+@limiter.limit("5/minute")
 async def tenant_login(
     request: TenantLoginRequest,
+    req: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -170,6 +225,16 @@ async def tenant_login(
     4. Retorna informacoes de acesso
     """
     email = request.email.lower()
+    client_ip = get_remote_address(req)
+
+    # 0. Verifica se IP/email esta bloqueado por tentativas falhas
+    is_locked, remaining_seconds = login_tracker.is_locked(client_ip, email)
+    if is_locked:
+        minutes = remaining_seconds // 60
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Muitas tentativas de login. Tente novamente em {minutes} minutos."
+        )
 
     # 1. Busca tenant pelo email principal
     result = await db.execute(
@@ -204,6 +269,8 @@ async def tenant_login(
                 break
 
     if not tenant:
+        # Registra tentativa falha
+        login_tracker.record_failed_attempt(client_ip, email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou senha incorretos"
@@ -325,10 +392,15 @@ async def tenant_login(
             user = None
 
     if not user:
+        # Registra tentativa falha
+        login_tracker.record_failed_attempt(client_ip, email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou senha incorretos"
         )
+
+    # Login bem-sucedido - limpa tentativas falhas
+    login_tracker.clear_attempts(client_ip, email)
 
     # 7. Gera token de acesso
     token_data = {
