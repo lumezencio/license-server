@@ -3279,10 +3279,69 @@ def calculate_interest_months(data_inicial, data_final):
     dias = (data_final - data_inicial).days
     return dias / 30.0
 
+# Cache para taxas legais (SELIC - IPCA) por mês
+_taxa_legal_cache = {}
+
+async def get_taxa_legal_mes(ano: int, mes: int):
+    """
+    Busca Taxa Legal (SELIC - IPCA) para um mês específico.
+    Lei 14.905/2024 Art. 406: Taxa legal = SELIC acumulada - IPCA acumulado do mês
+    Retorna a taxa mensal em percentual (ex: 0.65 para 0.65%)
+    """
+    from datetime import date
+
+    cache_key = f"{ano}-{mes:02d}"
+    if cache_key in _taxa_legal_cache:
+        return _taxa_legal_cache[cache_key]
+
+    try:
+        # Busca SELIC do mês (série 4390 - Taxa SELIC mensal)
+        data_inicio = date(ano, mes, 1)
+        if mes == 12:
+            data_fim = date(ano + 1, 1, 1)
+        else:
+            data_fim = date(ano, mes + 1, 1)
+
+        # SELIC mensal acumulada
+        dados_selic = await fetch_bcb_index(4390, data_inicio, data_fim)
+        selic_mes = 0.0
+        if dados_selic:
+            for item in dados_selic:
+                try:
+                    valor = float(str(item.get("valor", "0")).replace(",", "."))
+                    selic_mes = valor  # Último valor do mês
+                except:
+                    pass
+
+        # IPCA do mês (série 433)
+        dados_ipca = await fetch_bcb_index(433, data_inicio, data_fim)
+        ipca_mes = 0.0
+        if dados_ipca:
+            for item in dados_ipca:
+                try:
+                    valor = float(str(item.get("valor", "0")).replace(",", "."))
+                    ipca_mes = valor
+                except:
+                    pass
+
+        # Taxa Legal = SELIC - IPCA (não pode ser negativa)
+        taxa_legal = max(0.0, selic_mes - ipca_mes)
+
+        # Cache do resultado
+        _taxa_legal_cache[cache_key] = taxa_legal
+        logger.debug(f"Taxa Legal {cache_key}: SELIC={selic_mes:.4f}% - IPCA={ipca_mes:.4f}% = {taxa_legal:.4f}%")
+
+        return taxa_legal
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar taxa legal {cache_key}: {e}")
+        # Fallback para valor aproximado se houver erro
+        return 0.65
+
 def get_interest_rate_for_date(tipo_juros: str, data_ref, percentual_personalizado=None):
     """
-    Retorna taxa de juros mensal conforme a data de referencia
-    Considera a Lei 14.905/2024 que altera as taxas a partir de 30/08/2024
+    Retorna taxa de juros mensal conforme a data de referencia (síncrono, para taxas fixas)
+    Para taxa legal pós Lei 14.905/2024, retorna None (deve usar get_taxa_legal_mes async)
     Conforme DR Calc: 6% a.a anterior a 11/02/03; 12% a.a de 12/02/03 a 30/08/24; Taxa Legal a partir de 30/08/24
     """
     from datetime import date, datetime
@@ -3299,14 +3358,14 @@ def get_interest_rate_for_date(tipo_juros: str, data_ref, percentual_personaliza
         return 1.0
     elif tipo_juros == "fixos_0_5_mes":
         return 0.5
-    elif tipo_juros in ["juros_legais_6_12", "juros_legais_selic_lei_14905", "taxa_legal_selic_ipca"]:
+    elif tipo_juros in ["juros_legais_6_12", "juros_legais_selic_lei_14905", "taxa_legal_selic_ipca", "taxa_legal_art_406"]:
         # Lei 14.905/2024: Taxa Legal = SELIC - IPCA a partir de 30/08/2024
         if data_ref < marco_cc2002:
             return 0.5  # 6% a.a. = 0.5% a.m. (antes do CC 2002)
         elif data_ref < marco_lei_14905:
             return 1.0  # 12% a.a. = 1% a.m. (CC 2002 até Lei 14.905)
         else:
-            return 0.65  # ~7.8% a.a. = 0.65% a.m. (SELIC - IPCA aproximado)
+            return None  # Sinaliza que deve buscar taxa legal real via async
     elif tipo_juros == "poupanca":
         return 0.5
     elif tipo_juros == "personalizado" and percentual_personalizado:
@@ -3318,9 +3377,16 @@ async def calculate_legal_interest_monthly(valor_base: float, data_inicial, data
     """
     Calcula juros mês a mês, aplicando a taxa correta para cada período.
     Considera a Lei 14.905/2024 (30/08/2024) para aplicar taxas diferentes.
-    Compatível com DR Calc.
+
+    METODOLOGIA LEGAL:
+    - Antes de 12/02/2003: 6% a.a. (0.5% a.m.) - Código Civil 1916
+    - De 12/02/2003 a 29/08/2024: 12% a.a. (1% a.m.) - Art. 406 CC/2002 + STJ
+    - A partir de 30/08/2024: SELIC - IPCA (Taxa Legal real) - Lei 14.905/2024
+
+    IMPORTANTE: Juros de mora incidem a partir do DIA SEGUINTE ao vencimento.
+    Compatível com DR Calc e TJSP.
     """
-    from datetime import date, datetime
+    from datetime import date, datetime, timedelta
     from calendar import monthrange
 
     if isinstance(data_inicial, str):
@@ -3328,15 +3394,22 @@ async def calculate_legal_interest_monthly(valor_base: float, data_inicial, data
     if isinstance(data_final, str):
         data_final = datetime.strptime(data_final, "%Y-%m-%d").date()
 
-    if data_final <= data_inicial:
+    # CORREÇÃO LEGAL: Juros de mora incidem a partir do DIA SEGUINTE ao vencimento
+    # Art. 397 CC: "O inadimplemento da obrigação, positiva e líquida, no seu termo,
+    # constitui de pleno direito em mora o devedor."
+    data_inicio_juros = data_inicial + timedelta(days=1)
+
+    if data_final <= data_inicio_juros:
         return {"percentual_total": 0.0, "valor_juros": 0.0}
 
     percentual_total = 0.0
     valor_juros = 0.0
     valor_acumulado = valor_base
 
-    # Itera mês a mês do período
-    data_atual = data_inicial
+    marco_lei_14905 = date(2024, 8, 30)
+
+    # Itera mês a mês do período (a partir do dia seguinte ao vencimento)
+    data_atual = data_inicio_juros
     while data_atual < data_final:
         # Determina o último dia do mês atual
         _, ultimo_dia = monthrange(data_atual.year, data_atual.month)
@@ -3346,9 +3419,9 @@ async def calculate_legal_interest_monthly(valor_base: float, data_inicial, data
         data_fim_periodo = min(fim_mes, data_final)
 
         # Calcula dias neste mês
-        if data_atual == data_inicial:
-            # Primeiro mês: conta a partir do dia do vencimento
-            dias_no_mes = (data_fim_periodo - data_atual).days
+        if data_atual == data_inicio_juros:
+            # Primeiro mês: conta a partir do dia seguinte ao vencimento
+            dias_no_mes = (data_fim_periodo - data_atual).days + 1
         else:
             # Meses seguintes: mês completo ou até data_final
             dias_no_mes = (data_fim_periodo - date(data_atual.year, data_atual.month, 1)).days + 1
@@ -3361,6 +3434,10 @@ async def calculate_legal_interest_monthly(valor_base: float, data_inicial, data
 
         # Determina a taxa aplicável para este mês
         taxa_mes = get_interest_rate_for_date(tipo_juros, data_atual, percentual_personalizado)
+
+        # Se retornou None, significa que é período pós Lei 14.905 e deve buscar taxa real
+        if taxa_mes is None:
+            taxa_mes = await get_taxa_legal_mes(data_atual.year, data_atual.month)
 
         # Calcula juros pro-rata para este mês
         taxa_periodo = taxa_mes * fracao_mes
