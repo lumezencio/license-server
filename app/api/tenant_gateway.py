@@ -4916,18 +4916,33 @@ async def get_reports_accounts_receivable_summary(
             param_idx += 1
 
         if status:
-            where_parts.append(f"UPPER(ar.status::text) = ${param_idx}")
-            params.append(status.upper())
-            param_idx += 1
+            status_upper = status.upper()
+            # 'OVERDUE' (Vencido) nao e um status real no banco
+            # E uma condicao calculada: status pendente/parcial + due_date < hoje
+            if status_upper == 'OVERDUE':
+                where_parts.append("UPPER(ar.status::text) IN ('PENDING', 'PARTIAL')")
+                where_parts.append("ar.due_date < CURRENT_DATE")
+            else:
+                where_parts.append(f"UPPER(ar.status::text) = ${param_idx}")
+                params.append(status_upper)
+                param_idx += 1
 
         where_clause = " AND ".join(where_parts) + filter_clause
 
         # Lista de contas
+        # Inclui campo 'balance' calculado e status ajustado para 'overdue' quando vencido
         rows = await conn.fetch(f"""
             SELECT ar.id, ar.customer_id, ar.description, ar.document_number, ar.amount,
                 ar.paid_amount, ar.due_date, ar.payment_date, ar.status, ar.payment_method,
                 ar.installment_number, ar.total_installments, ar.parent_id, ar.notes,
                 ar.is_active, ar.created_at, ar.updated_at,
+                (ar.amount - COALESCE(ar.paid_amount, 0)) as balance,
+                CASE
+                    WHEN ar.status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                         AND ar.due_date < CURRENT_DATE
+                    THEN 'overdue'
+                    ELSE LOWER(ar.status::text)
+                END as calculated_status,
                 COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name
             FROM accounts_receivable ar
             LEFT JOIN customers c ON ar.customer_id = c.id
@@ -4940,8 +4955,17 @@ async def get_reports_accounts_receivable_summary(
         total_paid = sum(float(r.get('paid_amount', 0) or 0) for r in rows)
         total_balance = total_value - total_paid
 
+        # Converte rows para dict e substitui 'status' pelo 'calculated_status'
+        data_list = []
+        for row in rows:
+            row_dict = row_to_dict(row)
+            # Usa o status calculado (que inclui 'overdue' para vencidos)
+            if 'calculated_status' in row_dict:
+                row_dict['status'] = row_dict['calculated_status']
+            data_list.append(row_dict)
+
         return {
-            "data": [row_to_dict(row) for row in rows],
+            "data": data_list,
             "summary": {
                 "total_value": total_value,
                 "total_paid": total_paid,
@@ -5008,18 +5032,33 @@ async def get_reports_accounts_payable_summary(
             param_idx += 1
 
         if status:
-            where_parts.append(f"UPPER(ap.status::text) = ${param_idx}")
-            params.append(status.upper())
-            param_idx += 1
+            status_upper = status.upper()
+            # 'OVERDUE' (Vencido) nao e um status real no banco
+            # E uma condicao calculada: status pendente/parcial + due_date < hoje
+            if status_upper == 'OVERDUE':
+                where_parts.append("UPPER(ap.status::text) IN ('PENDING', 'PARTIAL')")
+                where_parts.append("ap.due_date < CURRENT_DATE")
+            else:
+                where_parts.append(f"UPPER(ap.status::text) = ${param_idx}")
+                params.append(status_upper)
+                param_idx += 1
 
         where_clause = " AND ".join(where_parts)
 
         # Lista de contas - usa apenas amount_paid (schema padrão)
+        # Inclui campo 'balance' calculado e status ajustado para 'overdue' quando vencido
         rows = await conn.fetch(f"""
             SELECT ap.id, ap.supplier_id, ap.description, ap.document_number, ap.amount,
                 COALESCE(ap.amount_paid, 0) as paid_amount,
                 ap.due_date, ap.payment_date, ap.status, ap.payment_method,
                 ap.notes, ap.created_at, ap.updated_at,
+                (ap.amount - COALESCE(ap.amount_paid, 0)) as balance,
+                CASE
+                    WHEN ap.status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                         AND ap.due_date < CURRENT_DATE
+                    THEN 'overdue'
+                    ELSE LOWER(ap.status::text)
+                END as calculated_status,
                 COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
             FROM accounts_payable ap
             LEFT JOIN suppliers s ON ap.supplier_id = s.id
@@ -5032,8 +5071,17 @@ async def get_reports_accounts_payable_summary(
         total_paid = sum(float(r.get('paid_amount', 0) or 0) for r in rows)
         total_balance = total_value - total_paid
 
+        # Converte rows para dict e substitui 'status' pelo 'calculated_status'
+        data_list = []
+        for row in rows:
+            row_dict = row_to_dict(row)
+            # Usa o status calculado (que inclui 'overdue' para vencidos)
+            if 'calculated_status' in row_dict:
+                row_dict['status'] = row_dict['calculated_status']
+            data_list.append(row_dict)
+
         return {
-            "data": [row_to_dict(row) for row in rows],
+            "data": data_list,
             "summary": {
                 "total_value": total_value,
                 "total_paid": total_paid,
