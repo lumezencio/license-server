@@ -2,14 +2,18 @@
 License Server - Email Service
 Serviço de envio de emails para notificações e credenciais
 Suporta SMTP e Resend API (para quando SMTP estiver bloqueado)
+
+ANTI-SPAM: Headers e boas práticas implementadas para evitar caixa de spam
 """
 import smtplib
 import ssl
 import httpx
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import formatdate, make_msgid
 from typing import Optional
 import logging
+import uuid
 
 from .config import settings
 
@@ -80,15 +84,39 @@ class EmailService:
         html_content: str,
         text_content: Optional[str] = None
     ) -> bool:
-        """Envia email via SMTP"""
+        """Envia email via SMTP com headers anti-spam"""
         try:
-            # Cria mensagem
+            # Cria mensagem multipart/alternative (melhor para anti-spam)
             message = MIMEMultipart("alternative")
             message["Subject"] = subject
             message["From"] = f"{self.from_name} <{self.from_email}>"
             message["To"] = to_email
 
-            # Adiciona conteúdo texto
+            # === HEADERS ANTI-SPAM ===
+            # Message-ID único e bem formatado
+            domain = self.from_email.split('@')[1] if '@' in self.from_email else 'tech-emp.com'
+            message["Message-ID"] = make_msgid(domain=domain)
+
+            # Data no formato correto RFC 2822
+            message["Date"] = formatdate(localtime=True)
+
+            # Reply-To igual ao From (consistência)
+            message["Reply-To"] = f"{self.from_name} <{self.from_email}>"
+
+            # MIME-Version (obrigatório)
+            message["MIME-Version"] = "1.0"
+
+            # Headers que indicam email legítimo
+            message["X-Mailer"] = "Tech-EMP Sistema v1.0"
+            message["X-Priority"] = "3"  # Normal priority (1=Alta pode ser spam)
+            message["Precedence"] = "bulk"  # Indica email transacional
+
+            # List-Unsubscribe (Gmail e outros verificam isso)
+            message["List-Unsubscribe"] = f"<mailto:unsubscribe@tech-emp.com?subject=unsubscribe>"
+            message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+
+            # Adiciona conteúdo texto PRIMEIRO (importante para anti-spam)
+            # Emails só com HTML são mais propensos a spam
             if text_content:
                 part1 = MIMEText(text_content, "plain", "utf-8")
                 message.attach(part1)
@@ -168,7 +196,7 @@ class EmailService:
             trial_days: Dias de trial
             login_url: URL de login
         """
-        subject = f"🎉 Bem-vindo ao Tech-EMP Sistema - Seus dados de acesso"
+        subject = f"Bem-vindo ao Tech-EMP Sistema - Seus dados de acesso"
 
         html_content = f"""
 <!DOCTYPE html>
