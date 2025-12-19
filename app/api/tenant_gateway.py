@@ -3466,7 +3466,11 @@ async def calculate_legal_interest_monthly(valor_base: float, data_inicial, data
 
 async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_juros_mora: str,
                           percentual_juros_mora=None, percentual_multa=0, capitalizar=False):
-    """Calcula um debito com correcao, juros e multa - compatível com DR Calc"""
+    """Calcula um debito com correcao, juros e multa - compatível com DR Calc
+
+    IMPORTANTE: Se o débito tem usar_config_individual=True, usa as configurações
+    individuais do débito ao invés das configurações gerais do cálculo.
+    """
     from datetime import datetime
 
     valor_original = debito.get("valor_original", 0)
@@ -3485,18 +3489,42 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
             "valor_total": valor_original,
         }
 
-    # 1. Correcao Monetaria
-    fator = await calculate_correction_factor(tipo_indice, data_vencimento, termo_final)
+    # Verifica se o débito tem configuração individual
+    usar_config_individual = debito.get("usar_config_individual", False)
+
+    if usar_config_individual:
+        # Usa configurações individuais do débito (se definidas)
+        tipo_indice_debito = debito.get("indice_correcao") or tipo_indice
+        tipo_juros_mora_debito = debito.get("tipo_juros_mora") or tipo_juros_mora
+        percentual_juros_mora_debito = debito.get("taxa_juros_mora") or percentual_juros_mora
+        # Data início/fim da correção (se definidas no débito)
+        data_inicio_correcao = debito.get("data_inicio_correcao") or data_vencimento
+        data_fim_correcao = debito.get("data_fim_correcao") or termo_final
+        # Data início/fim dos juros de mora (se definidas no débito)
+        data_inicio_juros = debito.get("data_inicio_juros_mora") or data_vencimento
+        data_fim_juros = debito.get("data_fim_juros_mora") or termo_final
+    else:
+        # Usa configurações gerais do cálculo
+        tipo_indice_debito = tipo_indice
+        tipo_juros_mora_debito = tipo_juros_mora
+        percentual_juros_mora_debito = percentual_juros_mora
+        data_inicio_correcao = data_vencimento
+        data_fim_correcao = termo_final
+        data_inicio_juros = data_vencimento
+        data_fim_juros = termo_final
+
+    # 1. Correcao Monetaria (usando datas do débito se individuais)
+    fator = await calculate_correction_factor(tipo_indice_debito, data_inicio_correcao, data_fim_correcao)
     valor_corrigido = valor_original * fator
 
     # 2. Juros de Mora - calcula mês a mês respeitando Lei 14.905/2024
-    if tipo_juros_mora == "nao_aplicar":
+    if tipo_juros_mora_debito == "nao_aplicar":
         percentual_juros_total = 0.0
         valor_juros = 0.0
-    elif percentual_juros_mora:
+    elif percentual_juros_mora_debito:
         # Taxa fixa informada pelo usuário
-        meses = calculate_interest_months(data_vencimento, termo_final)
-        taxa = float(percentual_juros_mora)
+        meses = calculate_interest_months(data_inicio_juros, data_fim_juros)
+        taxa = float(percentual_juros_mora_debito)
         percentual_juros_total = taxa * meses
         if capitalizar:
             valor_juros = valor_corrigido * ((1 + taxa/100) ** meses - 1)
@@ -3505,8 +3533,8 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
     else:
         # Taxa legal - calcular mês a mês (Lei 14.905/2024)
         juros_result = await calculate_legal_interest_monthly(
-            valor_corrigido, data_vencimento, termo_final, tipo_juros_mora,
-            percentual_juros_mora, capitalizar
+            valor_corrigido, data_inicio_juros, data_fim_juros, tipo_juros_mora_debito,
+            percentual_juros_mora_debito, capitalizar
         )
         percentual_juros_total = juros_result["percentual_total"]
         valor_juros = juros_result["valor_juros"]
@@ -3526,6 +3554,7 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
         "valor_juros_mora": round(valor_juros, 2),
         "valor_multa": round(valor_multa, 2),
         "valor_total": round(valor_total, 2),
+        "config_individual": usar_config_individual,  # Indica se usou config individual
     }
 
 async def calculate_all_debitos(data: dict):

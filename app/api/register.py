@@ -2,13 +2,14 @@
 License Server - Registration API
 Endpoint público para auto-registro de tenants (trial)
 
-VERSÃO 2.0 - Provisionamento SÍNCRONO com RETRY automático
-- O cadastro só retorna sucesso após o banco estar 100% provisionado
-- Sistema de retry automático (3 tentativas)
-- Tratamento robusto de erros
+VERSÃO 3.0 - Provisionamento ASSÍNCRONO em background
+- Registro retorna imediatamente após criar tenant
+- Provisionamento ocorre em background (não bloqueia)
+- Frontend pode verificar status via /register/status/{tenant_code}
+- Evita timeout do Cloudflare (100s)
 """
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import hashlib
@@ -138,6 +139,100 @@ def send_welcome_email_safe(
         return False
 
 
+async def background_provision_tenant(
+    tenant_id: int,
+    tenant_code: str,
+    database_name: str,
+    database_user: str,
+    database_password: str,
+    admin_email: str,
+    admin_password: str,
+    admin_name: str,
+    product_code: str,
+    license_key: str,
+    client_id: int
+):
+    """
+    Executa o provisionamento em background.
+    Atualiza o status do tenant ao terminar.
+    """
+    logger.info(f"[BACKGROUND] Iniciando provisionamento do tenant {tenant_code}...")
+
+    # Cria nova sessão para operação em background
+    async with AsyncSessionLocal() as db:
+        try:
+            # Executa provisionamento com retry
+            provision_success, provision_message = await provision_with_retry(
+                tenant_code=tenant_code,
+                database_name=database_name,
+                database_user=database_user,
+                database_password=database_password,
+                admin_email=admin_email,
+                admin_password=admin_password,
+                admin_name=admin_name,
+                product_code=product_code
+            )
+
+            # Busca tenant para atualizar
+            result = await db.execute(
+                select(Tenant).where(Tenant.id == tenant_id)
+            )
+            tenant = result.scalar_one_or_none()
+
+            if not tenant:
+                logger.error(f"[BACKGROUND] Tenant {tenant_code} não encontrado!")
+                return
+
+            if provision_success:
+                tenant.status = TenantStatus.TRIAL.value
+                tenant.provisioned_at = datetime.utcnow()
+                tenant.activated_at = datetime.utcnow()
+
+                # Atualiza licença
+                result = await db.execute(
+                    select(License).where(License.client_id == client_id)
+                )
+                license = result.scalar_one_or_none()
+                if license:
+                    license.status = LicenseStatus.ACTIVE.value
+                    license.activated_at = datetime.utcnow()
+
+                await db.commit()
+                logger.info(f"[BACKGROUND] === TENANT {tenant_code} PROVISIONADO COM SUCESSO! ===")
+
+                # Envia email de boas-vindas
+                login_url = f"{settings.LOGIN_URL}?tenant={tenant_code}"
+                send_welcome_email_safe(
+                    to_email=admin_email,
+                    name=admin_name,
+                    license_key=license_key,
+                    tenant_code=tenant_code,
+                    password_hint=f"Seu CPF/CNPJ: {admin_password}",
+                    trial_days=30,
+                    login_url=login_url
+                )
+            else:
+                tenant.status = TenantStatus.ERROR.value
+                tenant.notes = f"Erro no provisionamento: {provision_message}"
+                await db.commit()
+                logger.error(f"[BACKGROUND] === FALHA NO PROVISIONAMENTO DO TENANT {tenant_code} ===")
+                logger.error(f"[BACKGROUND] Erro: {provision_message}")
+
+        except Exception as e:
+            logger.error(f"[BACKGROUND] Erro fatal no provisionamento de {tenant_code}: {e}")
+            try:
+                result = await db.execute(
+                    select(Tenant).where(Tenant.id == tenant_id)
+                )
+                tenant = result.scalar_one_or_none()
+                if tenant:
+                    tenant.status = TenantStatus.ERROR.value
+                    tenant.notes = f"Erro fatal: {str(e)}"
+                    await db.commit()
+            except:
+                pass
+
+
 @router.post("/trial", response_model=TenantRegisterResponse)
 async def register_trial(
     request: TenantRegisterRequest,
@@ -146,15 +241,14 @@ async def register_trial(
     """
     Registra um novo tenant com licença trial de 30 dias.
 
-    FLUXO COMPLETO E SÍNCRONO:
+    FLUXO ASSÍNCRONO (v3.0):
     1. Valida dados (email e documento únicos)
     2. Cria registros no banco (tenant, client, license)
-    3. Provisiona banco de dados do tenant (COM RETRY AUTOMÁTICO)
-    4. Atualiza status para TRIAL/ACTIVE
-    5. Envia email de boas-vindas
-    6. Retorna credenciais
+    3. Retorna sucesso IMEDIATAMENTE
+    4. Provisionamento ocorre em BACKGROUND
+    5. Frontend verifica status via /register/status/{tenant_code}
 
-    O usuário SÓ recebe sucesso quando TUDO estiver pronto!
+    Evita timeout do Cloudflare (100s) fazendo provisionamento assíncrono.
 
     Login: email informado
     Senha inicial: CPF/CNPJ (apenas números)
@@ -277,66 +371,35 @@ async def register_trial(
     await db.refresh(tenant)
     await db.refresh(license)
 
-    logger.info(f"Registros criados. Iniciando provisionamento do banco...")
+    logger.info(f"Registros criados. Iniciando provisionamento em BACKGROUND...")
 
-    # 11. PROVISIONAMENTO SÍNCRONO COM RETRY (usa schema do produto correto)
-    provision_success, provision_message = await provision_with_retry(
-        tenant_code=tenant_code,
-        database_name=database_name,
-        database_user=database_user,
-        database_password=database_password,
-        admin_email=request.email,
-        admin_password=request.document,  # CPF/CNPJ como senha inicial
-        admin_name=request.name,
-        product_code=request.product_code  # enterprise, condotech, etc.
-    )
-
-    # 12. Atualiza status baseado no resultado do provisionamento
-    if provision_success:
-        tenant.status = TenantStatus.TRIAL.value
-        tenant.provisioned_at = datetime.utcnow()
-        tenant.activated_at = datetime.utcnow()
-
-        license.status = LicenseStatus.ACTIVE.value
-        license.activated_at = datetime.utcnow()
-
-        await db.commit()
-        logger.info(f"=== TENANT {tenant_code} PROVISIONADO COM SUCESSO! ===")
-    else:
-        # Marca como ERRO mas não impede o cadastro
-        tenant.status = TenantStatus.ERROR.value
-        tenant.notes = f"Erro no provisionamento: {provision_message}"
-        await db.commit()
-
-        logger.error(f"=== FALHA NO PROVISIONAMENTO DO TENANT {tenant_code} ===")
-        logger.error(f"Erro: {provision_message}")
-
-        # Retorna erro para o usuário
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao criar seu ambiente. Por favor, entre em contato com o suporte. Código: {tenant_code}"
+    # 11. PROVISIONAMENTO ASSÍNCRONO EM BACKGROUND (não bloqueia a resposta)
+    # Usa asyncio.create_task para executar em paralelo
+    asyncio.create_task(
+        background_provision_tenant(
+            tenant_id=tenant.id,
+            tenant_code=tenant_code,
+            database_name=database_name,
+            database_user=database_user,
+            database_password=database_password,
+            admin_email=request.email,
+            admin_password=request.document,
+            admin_name=request.name,
+            product_code=request.product_code,
+            license_key=license_key,
+            client_id=client.id
         )
-
-    # 13. Envia email de boas-vindas (não bloqueia em caso de erro)
-    login_url = f"{settings.LOGIN_URL}?tenant={tenant_code}"
-    email_sent = send_welcome_email_safe(
-        to_email=request.email,
-        name=request.name,
-        license_key=license_key,
-        tenant_code=tenant_code,
-        password_hint=f"Seu CPF/CNPJ: {request.document}",
-        trial_days=30,
-        login_url=login_url
     )
 
-    # 14. Retorna resposta com credenciais
-    response_message = "Cadastro realizado com sucesso! "
-    if email_sent:
-        response_message += "Você receberá um e-mail com as instruções de acesso."
-    else:
-        response_message += "Anote suas credenciais: Login = seu email, Senha = seu CPF/CNPJ (apenas números)."
+    # 12. Retorna sucesso IMEDIATAMENTE (provisionamento continua em background)
+    login_url = f"{settings.LOGIN_URL}?tenant={tenant_code}"
+    response_message = (
+        "Cadastro realizado com sucesso! "
+        "Seu ambiente está sendo preparado (aguarde alguns segundos). "
+        "Anote suas credenciais: Login = seu email, Senha = seu CPF/CNPJ (apenas números)."
+    )
 
-    logger.info(f"=== REGISTRO COMPLETO: {tenant_code} ===")
+    logger.info(f"=== REGISTRO ACEITO: {tenant_code} (provisionamento em background) ===")
 
     return TenantRegisterResponse(
         success=True,
