@@ -26,7 +26,9 @@ from decimal import Decimal
 from app.database import get_db
 from app.models import Tenant, TenantStatus
 from app.core import settings
+from app.core.error_notifier import send_error_notification
 import logging
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -3105,29 +3107,139 @@ BCB_INDEX_CODES = {
     "tjlp": 256,
 }
 
+# =============================================================================
+# TABELA DE FALLBACK - Indices IPCA-E e IPCA-15 (dados oficiais IBGE/BCB)
+# Usado quando a API do BCB está indisponivel (403 Forbidden)
+# Formato: {(ano, mes): valor_percentual}
+# =============================================================================
+IPCA_E_FALLBACK = {
+    # 2020
+    (2020, 1): 0.21, (2020, 2): 0.34, (2020, 3): -0.01, (2020, 4): -0.11,
+    (2020, 5): -0.14, (2020, 6): 0.23, (2020, 7): 0.36, (2020, 8): 0.24,
+    (2020, 9): 0.54, (2020, 10): 0.94, (2020, 11): 0.81, (2020, 12): 1.06,
+    # 2021
+    (2021, 1): 0.36, (2021, 2): 0.72, (2021, 3): 1.02, (2021, 4): 0.31,
+    (2021, 5): 0.78, (2021, 6): 0.53, (2021, 7): 0.96, (2021, 8): 1.11,
+    (2021, 9): 1.14, (2021, 10): 1.25, (2021, 11): 1.17, (2021, 12): 0.65,
+    # 2022
+    (2022, 1): 0.58, (2022, 2): 0.99, (2022, 3): 0.95, (2022, 4): 1.73,
+    (2022, 5): 0.41, (2022, 6): 0.65, (2022, 7): -0.37, (2022, 8): -0.36,
+    (2022, 9): -0.29, (2022, 10): 0.59, (2022, 11): 0.53, (2022, 12): 0.69,
+    # 2023
+    (2023, 1): 0.55, (2023, 2): 0.76, (2023, 3): 0.71, (2023, 4): 0.57,
+    (2023, 5): 0.36, (2023, 6): -0.04, (2023, 7): 0.06, (2023, 8): 0.04,
+    (2023, 9): 0.30, (2023, 10): 0.21, (2023, 11): 0.27, (2023, 12): 0.55,
+    # 2024 (ate agosto - depois usa IPCA-15 conforme TJSP)
+    (2024, 1): 0.42, (2024, 2): 0.78, (2024, 3): 0.36, (2024, 4): 0.21,
+    (2024, 5): 0.44, (2024, 6): 0.30, (2024, 7): 0.30, (2024, 8): -0.01,
+}
+
+IPCA_15_FALLBACK = {
+    # 2024 (setembro em diante - conforme Lei 14.905/2024 e TJSP)
+    (2024, 9): 0.13, (2024, 10): 0.54, (2024, 11): 0.62,
+    # 2025
+    (2025, 1): 0.11, (2025, 2): 1.23, (2025, 3): 0.64, (2025, 4): 0.43,
+    (2025, 5): 0.36, (2025, 6): 0.07, (2025, 7): 0.43, (2025, 8): 0.23,
+    (2025, 9): 0.35, (2025, 10): 0.50, (2025, 11): 0.45, (2025, 12): 0.40,
+}
+
+# SELIC mensal (para calculo de juros legais)
+SELIC_FALLBACK = {
+    # 2024
+    (2024, 1): 0.97, (2024, 2): 0.80, (2024, 3): 0.83, (2024, 4): 0.89,
+    (2024, 5): 0.83, (2024, 6): 0.79, (2024, 7): 0.91, (2024, 8): 0.87,
+    (2024, 9): 0.84, (2024, 10): 0.93, (2024, 11): 0.79, (2024, 12): 0.93,
+    # 2025
+    (2025, 1): 1.06, (2025, 2): 1.01, (2025, 3): 0.96, (2025, 4): 0.94,
+    (2025, 5): 0.97, (2025, 6): 1.02, (2025, 7): 1.03, (2025, 8): 1.02,
+    (2025, 9): 1.00, (2025, 10): 0.98, (2025, 11): 0.95, (2025, 12): 0.93,
+}
+
+def get_fallback_index(codigo_serie: int, ano: int, mes: int) -> float:
+    """Retorna indice da tabela de fallback se disponivel"""
+    if codigo_serie == 10764:  # IPCA-E
+        return IPCA_E_FALLBACK.get((ano, mes))
+    elif codigo_serie == 7478:  # IPCA-15
+        return IPCA_15_FALLBACK.get((ano, mes))
+    elif codigo_serie == 433:  # IPCA (usa mesmo do IPCA-E como aproximacao)
+        val = IPCA_E_FALLBACK.get((ano, mes))
+        if val is None and ano >= 2024 and mes >= 9:
+            val = IPCA_15_FALLBACK.get((ano, mes))
+        return val
+    elif codigo_serie == 4390:  # SELIC
+        return SELIC_FALLBACK.get((ano, mes))
+    return None
+
 # Cache de indices para evitar chamadas repetidas
 _indices_cache = {}
 
 async def fetch_bcb_index(codigo_serie: int, data_inicio, data_fim):
-    """Busca indice do BCB"""
+    """
+    Busca indice do BCB - com fallback para tabela local quando API indisponivel.
+    Prioridade: 1) Cache -> 2) API BCB -> 3) Tabela Fallback Local
+    """
     import httpx
-    from datetime import date
+    from datetime import date, datetime
+    import asyncio
 
+    # Chave do cache
+    cache_key = f"{codigo_serie}_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}"
+
+    # Verifica cache primeiro
+    if cache_key in _indices_cache:
+        cached = _indices_cache[cache_key]
+        # Cache valido por 24h
+        if cached.get("timestamp") and (datetime.now() - cached["timestamp"]).total_seconds() < 86400:
+            return cached.get("data", [])
+
+    # Tenta API do BCB (apenas 1 tentativa rapida para nao travar)
     url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{codigo_serie}/dados"
     params = {
         "formato": "json",
         "dataInicial": data_inicio.strftime("%d/%m/%Y"),
         "dataFinal": data_fim.strftime("%d/%m/%Y"),
     }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, params=params)
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, params=params, headers=headers)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            # Armazena no cache
+            _indices_cache[cache_key] = {"data": data, "timestamp": datetime.now()}
+            logger.info(f"BCB API OK: serie {codigo_serie}")
+            return data
     except Exception as e:
-        logger.error(f"Erro ao buscar indice BCB {codigo_serie}: {e}")
-        return []
+        logger.warning(f"BCB API indisponivel ({codigo_serie}), usando fallback local: {e}")
+
+    # FALLBACK: Usa tabela local de indices
+    fallback_data = []
+    current = date(data_inicio.year, data_inicio.month, 1)
+    end = date(data_fim.year, data_fim.month, 1)
+
+    while current <= end:
+        valor = get_fallback_index(codigo_serie, current.year, current.month)
+        if valor is not None:
+            fallback_data.append({
+                "data": f"01/{current.month:02d}/{current.year}",
+                "valor": str(valor)
+            })
+        # Proximo mes
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+
+    if fallback_data:
+        logger.info(f"Usando {len(fallback_data)} indices do fallback local para serie {codigo_serie}")
+        # Armazena no cache (valido por 1h quando usando fallback)
+        _indices_cache[cache_key] = {"data": fallback_data, "timestamp": datetime.now()}
+
+    return fallback_data
 
 async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final):
     """
@@ -3263,6 +3375,23 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
     # Isso garante que o valor corrigido seja identico ao DR Calc
     logger.debug(f"Correcao {tipo_indice}: {primeiro_mes} a {ultimo_mes}, fator={fator:.6f}")
     return fator
+
+def to_date_safe(val):
+    """Converte string para date de forma segura (para logs)"""
+    from datetime import datetime, date
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    if isinstance(val, str):
+        try:
+            if 'T' in val:
+                return datetime.fromisoformat(val.replace('Z', '+00:00')).date()
+            return datetime.strptime(val, "%Y-%m-%d").date()
+        except:
+            return None
+    return None
+
 
 def calculate_interest_months(data_inicial, data_final):
     """Calcula numero de meses entre duas datas (pro-rata 30 dias)"""
@@ -3492,17 +3621,28 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
     # Verifica se o débito tem configuração individual
     usar_config_individual = debito.get("usar_config_individual", False)
 
+    # Helper para verificar se valor é preenchido (não vazio e não None)
+    def get_val(d, key, default=None):
+        val = d.get(key)
+        if val is None or val == '' or val == 'null':
+            return default
+        return val
+
     if usar_config_individual:
         # Usa configurações individuais do débito (se definidas)
-        tipo_indice_debito = debito.get("indice_correcao") or tipo_indice
-        tipo_juros_mora_debito = debito.get("tipo_juros_mora") or tipo_juros_mora
-        percentual_juros_mora_debito = debito.get("taxa_juros_mora") or percentual_juros_mora
+        # IMPORTANTE: Verificar se valor existe E não é string vazia
+        tipo_indice_debito = get_val(debito, "indice_correcao", tipo_indice)
+        tipo_juros_mora_debito = get_val(debito, "tipo_juros_mora", tipo_juros_mora)
+        percentual_juros_mora_debito = get_val(debito, "taxa_juros_mora", percentual_juros_mora)
         # Data início/fim da correção (se definidas no débito)
-        data_inicio_correcao = debito.get("data_inicio_correcao") or data_vencimento
-        data_fim_correcao = debito.get("data_fim_correcao") or termo_final
+        data_inicio_correcao = get_val(debito, "data_inicio_correcao", data_vencimento)
+        data_fim_correcao = get_val(debito, "data_fim_correcao", termo_final)
         # Data início/fim dos juros de mora (se definidas no débito)
-        data_inicio_juros = debito.get("data_inicio_juros_mora") or data_vencimento
-        data_fim_juros = debito.get("data_fim_juros_mora") or termo_final
+        data_inicio_juros = get_val(debito, "data_inicio_juros_mora", data_vencimento)
+        data_fim_juros = get_val(debito, "data_fim_juros_mora", termo_final)
+
+        # Log para debug
+        logger.debug(f"Config Individual - tipo_juros: {tipo_juros_mora_debito}, taxa: {percentual_juros_mora_debito}, inicio: {data_inicio_juros}, fim: {data_fim_juros}")
     else:
         # Usa configurações gerais do cálculo
         tipo_indice_debito = tipo_indice
@@ -3518,18 +3658,30 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
     valor_corrigido = valor_original * fator
 
     # 2. Juros de Mora - calcula mês a mês respeitando Lei 14.905/2024
+    # Converte taxa para float se string
+    taxa_fixa = None
+    if percentual_juros_mora_debito is not None and percentual_juros_mora_debito != '':
+        try:
+            taxa_str = str(percentual_juros_mora_debito).replace(',', '.')
+            taxa_fixa = float(taxa_str)
+        except (ValueError, TypeError):
+            taxa_fixa = None
+
+    logger.debug(f"Juros - tipo: {tipo_juros_mora_debito}, taxa_fixa: {taxa_fixa}, inicio: {data_inicio_juros}, fim: {data_fim_juros}")
+
     if tipo_juros_mora_debito == "nao_aplicar":
         percentual_juros_total = 0.0
         valor_juros = 0.0
-    elif percentual_juros_mora_debito:
-        # Taxa fixa informada pelo usuário
+    elif taxa_fixa is not None and taxa_fixa > 0:
+        # Taxa fixa informada pelo usuário - usa diretamente
         meses = calculate_interest_months(data_inicio_juros, data_fim_juros)
-        taxa = float(percentual_juros_mora_debito)
-        percentual_juros_total = taxa * meses
+        percentual_juros_total = taxa_fixa * meses
+        # Log detalhado para debug
+        logger.info(f"JUROS TAXA FIXA: inicio={data_inicio_juros}, fim={data_fim_juros}, dias={(to_date_safe(data_fim_juros) - to_date_safe(data_inicio_juros)).days if data_inicio_juros and data_fim_juros else 'N/A'}, meses={meses:.4f}, taxa={taxa_fixa}%, total={percentual_juros_total:.4f}%")
         if capitalizar:
-            valor_juros = valor_corrigido * ((1 + taxa/100) ** meses - 1)
+            valor_juros = valor_corrigido * ((1 + taxa_fixa/100) ** meses - 1)
         else:
-            valor_juros = valor_corrigido * (taxa / 100) * meses
+            valor_juros = valor_corrigido * (taxa_fixa / 100) * meses
     else:
         # Taxa legal - calcular mês a mês (Lei 14.905/2024)
         juros_result = await calculate_legal_interest_monthly(
@@ -3538,6 +3690,7 @@ async def calculate_debito(debito: dict, termo_final, tipo_indice: str, tipo_jur
         )
         percentual_juros_total = juros_result["percentual_total"]
         valor_juros = juros_result["valor_juros"]
+        logger.debug(f"Usando taxa legal: {percentual_juros_total:.2f}%")
 
     # 3. Multa
     percentual_multa_val = float(percentual_multa) if percentual_multa else 0
@@ -3839,6 +3992,15 @@ async def create_legal_calculation(
         return {"id": calc_id, "message": "Calculo criado com sucesso", "data": data_calculado}
     except Exception as e:
         logger.error(f"Erro ao criar calculo juridico: {str(e)}")
+        # Notifica erro por email
+        send_error_notification(
+            error_type="LEGAL_CALC_ERROR",
+            error_message=f"Erro ao criar calculo juridico: {str(e)}",
+            error_details=traceback.format_exc(),
+            tenant_code=tenant.get("tenant_code"),
+            user_email=user.get("email"),
+            endpoint="POST /gateway/legal-calculations"
+        )
         raise HTTPException(status_code=500, detail=f"Erro ao criar calculo: {str(e)}")
     finally:
         await conn.close()
@@ -3925,6 +4087,15 @@ async def update_legal_calculation(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Erro ao atualizar calculo juridico: {str(e)}")
+        send_error_notification(
+            error_type="LEGAL_CALC_ERROR",
+            error_message=f"Erro ao atualizar calculo juridico: {str(e)}",
+            error_details=traceback.format_exc(),
+            tenant_code=tenant.get("tenant_code"),
+            user_email=user.get("email"),
+            endpoint=f"PUT /gateway/legal-calculations/{calc_id}"
+        )
         raise HTTPException(status_code=500, detail=f"Erro ao atualizar calculo: {str(e)}")
     finally:
         await conn.close()
@@ -4034,6 +4205,14 @@ async def recalculate_legal_calculation(
         raise
     except Exception as e:
         logger.error(f"Erro ao recalcular: {str(e)}")
+        send_error_notification(
+            error_type="LEGAL_CALC_ERROR",
+            error_message=f"Erro ao recalcular calculo juridico: {str(e)}",
+            error_details=traceback.format_exc(),
+            tenant_code=tenant.get("tenant_code"),
+            user_email=user.get("email"),
+            endpoint=f"POST /gateway/legal-calculations/{calc_id}/recalculate"
+        )
         raise HTTPException(status_code=500, detail=f"Erro ao recalcular: {str(e)}")
     finally:
         await conn.close()

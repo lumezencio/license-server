@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     RESEND_API_KEY: Optional[str] = None
     EMAIL_PROVIDER: str = "smtp"  # "smtp" ou "resend"
 
+    # Email de notificação de erros
+    ERROR_NOTIFICATION_EMAIL: str = "lucianomezencio@gmail.com"
+    ERROR_NOTIFICATION_ENABLED: bool = True
+
     # App URLs
     APP_URL: str = "https://www.tech-emp.com"
     LOGIN_URL: str = "https://www.tech-emp.com/login"

@@ -25,6 +25,8 @@ from app.schemas import (
 )
 from app.core import generate_license_key, email_service, settings
 from app.core.provisioning import provisioning_service, ProvisioningError
+from app.core.error_notifier import send_error_notification
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -217,9 +219,27 @@ async def background_provision_tenant(
                 await db.commit()
                 logger.error(f"[BACKGROUND] === FALHA NO PROVISIONAMENTO DO TENANT {tenant_code} ===")
                 logger.error(f"[BACKGROUND] Erro: {provision_message}")
+                # Notifica erro por email
+                send_error_notification(
+                    error_type="PROVISION_ERROR",
+                    error_message=f"Falha no provisionamento do tenant {tenant_code}",
+                    error_details=provision_message,
+                    tenant_code=tenant_code,
+                    user_email=admin_email,
+                    endpoint="POST /register/trial (background)"
+                )
 
         except Exception as e:
             logger.error(f"[BACKGROUND] Erro fatal no provisionamento de {tenant_code}: {e}")
+            # Notifica erro fatal por email
+            send_error_notification(
+                error_type="PROVISION_FATAL_ERROR",
+                error_message=f"Erro FATAL no provisionamento do tenant {tenant_code}",
+                error_details=traceback.format_exc(),
+                tenant_code=tenant_code,
+                user_email=admin_email,
+                endpoint="POST /register/trial (background)"
+            )
             try:
                 result = await db.execute(
                     select(Tenant).where(Tenant.id == tenant_id)
