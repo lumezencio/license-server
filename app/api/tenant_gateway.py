@@ -1028,6 +1028,41 @@ def to_date(val):
 
     return None
 
+# Mapeamento de payment_method do frontend para o enum do banco
+PAYMENT_METHOD_MAP = {
+    # Valores em minúsculo (frontend) -> MAIÚSCULO (enum do banco)
+    'dinheiro': 'DINHEIRO',
+    'pix': 'PIX',
+    'cartao_credito': 'CARTAO_CREDITO',
+    'cartao_debito': 'CARTAO_DEBITO',
+    'boleto': 'BOLETO',
+    'transferencia': 'TRANSFERENCIA',
+    'cheque': 'CHEQUE',
+    'outro': 'OUTRO',
+    # Valores legacy em inglês
+    'cash': 'DINHEIRO',
+    'CASH': 'DINHEIRO',
+    'credit_card': 'CARTAO_CREDITO',
+    'debit_card': 'CARTAO_DEBITO',
+    'bank_transfer': 'TRANSFERENCIA',
+    # Valores já em maiúsculo (passthrough)
+    'DINHEIRO': 'DINHEIRO',
+    'PIX': 'PIX',
+    'CARTAO_CREDITO': 'CARTAO_CREDITO',
+    'CARTAO_DEBITO': 'CARTAO_DEBITO',
+    'BOLETO': 'BOLETO',
+    'TRANSFERENCIA': 'TRANSFERENCIA',
+    'CHEQUE': 'CHEQUE',
+    'OUTRO': 'OUTRO',
+}
+
+def to_payment_method(val):
+    """Converte payment_method do frontend para o enum do banco"""
+    if not val:
+        return 'DINHEIRO'
+    val_str = str(val).strip()
+    return PAYMENT_METHOD_MAP.get(val_str, 'OUTRO')
+
 def generate_slug(name: str) -> str:
     """Gera um slug a partir do nome"""
     import re
@@ -1682,7 +1717,7 @@ async def create_sale(
             subtotal, discount_amount, discount_percent,
             shipping_amount, icms_amount, pis_amount, cofins_amount, iss_amount,
             total_amount,
-            to_str(data.get("payment_method")) or "CASH",
+            to_payment_method(data.get("payment_method")),
             to_str(data.get("payment_status")) or "pending",
             to_int(data.get("installments")) or 1,
             to_str(data.get("sale_status")) or "completed",
@@ -1795,7 +1830,7 @@ async def create_sale(
                     receivable_id, customer_id, None,
                     f"Venda {sale_number} - {items_desc}", sale_number,
                     total_amount, 0.0,
-                    sale_date, due_date, None, "PENDING", to_str(data.get("payment_method")),
+                    sale_date, due_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "VENDAS", 0, 1, to_str(data.get("notes")),
                     now, now
                 )
@@ -1820,7 +1855,7 @@ async def create_sale(
                     parent_id, customer_id, None,
                     f"Venda {sale_number} - {items_desc}", sale_number,
                     total_amount, 0.0,
-                    sale_date, sale_date, None, "PENDING", to_str(data.get("payment_method")),
+                    sale_date, sale_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "VENDAS", 0, num_installments, to_str(data.get("notes")),
                     now, now
                 )
@@ -1845,7 +1880,7 @@ async def create_sale(
                         installment_id, customer_id, parent_id,
                         f"Venda {sale_number} - Parcela {i}/{num_installments}", f"{sale_number}-{i}",
                         amount, 0.0,
-                        sale_date, due_date, None, "PENDING", to_str(data.get("payment_method")),
+                        sale_date, due_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                         "VENDAS", i, num_installments, None,
                         now, now
                     )
@@ -2059,7 +2094,7 @@ async def create_quotation(
             quotation_id, quotation_number, quotation_date, valid_until,
             to_str(data.get("customer_id")), to_str(data.get("seller_id")),
             subtotal, discount_amount, discount_percent, freight_amount, total_amount,
-            to_str(data.get("payment_method")), to_str(data.get("payment_terms")),
+            to_payment_method(data.get("payment_method")), to_str(data.get("payment_terms")),
             to_int(data.get("installments")) or 1,
             to_str(data.get("quotation_status")) or "pending",
             to_str(data.get("notes")), to_str(data.get("internal_notes")),
@@ -2285,7 +2320,7 @@ async def convert_quotation_to_sale(
             quotation["discount_percent"] or 0, quotation.get("freight_amount") or 0,
             0, 0, 0, 0,  # icms, pis, cofins, iss
             quotation["total_amount"] or 0,
-            quotation["payment_method"] or "CASH", "pending",
+            to_payment_method(quotation["payment_method"]), "pending",
             quotation["installments"] or 1, "completed",
             False, False, 1,
             f"Convertido do orçamento {quotation['quotation_number']}",
@@ -2527,7 +2562,7 @@ async def create_purchase(
             to_str(data.get("invoice_key")), invoice_date, purchase_date,
             delivery_date, expected_delivery_date,
             subtotal, discount_amount, freight_amount, insurance_amount, other_expenses,
-            tax_amount, total_amount, to_str(data.get("payment_method")),
+            tax_amount, total_amount, to_payment_method(data.get("payment_method")),
             to_str(data.get("payment_terms")), to_int(data.get("installments")) or 1,
             to_str(data.get("status")) or "PENDING", to_str(data.get("notes")),
             to_str(data.get("internal_notes")), False, False,
@@ -2599,7 +2634,7 @@ async def create_purchase(
                     payable_id, supplier_id, purchase_id, None, supplier_name,
                     f"Compra {purchase_number}", to_str(data.get("invoice_number")),
                     total_amount, 0.0, total_amount,
-                    purchase_date, purchase_date, None, "PENDING", to_str(data.get("payment_method")),
+                    purchase_date, purchase_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "COMPRAS", 0, 1, to_str(data.get("notes")),
                     now, now
                 )
@@ -2625,7 +2660,7 @@ async def create_purchase(
                     parent_id, supplier_id, purchase_id, None, supplier_name,
                     f"Compra {purchase_number}", to_str(data.get("invoice_number")),
                     total_amount, 0.0, total_amount,
-                    purchase_date, purchase_date, None, "PENDING", to_str(data.get("payment_method")),
+                    purchase_date, purchase_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "COMPRAS", 0, num_installments, to_str(data.get("notes")),
                     now, now
                 )
@@ -2653,7 +2688,7 @@ async def create_purchase(
                         f"Compra {purchase_number} - Parcela {i}/{num_installments}",
                         to_str(data.get("invoice_number")),
                         amount, 0.0, amount,
-                        purchase_date, due, None, "PENDING", to_str(data.get("payment_method")),
+                        purchase_date, due, None, "PENDING", to_payment_method(data.get("payment_method")),
                         "COMPRAS", i, num_installments, to_str(data.get("notes")),
                         now, now
                     )
