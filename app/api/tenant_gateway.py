@@ -1852,7 +1852,7 @@ async def list_quotations(
     status: Optional[str] = None,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Lista orçamentos do tenant"""
+    """Lista orçamentos do tenant com seus itens"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
@@ -1879,7 +1879,26 @@ async def list_quotations(
             LIMIT $1 OFFSET $2
         """, *params)
 
-        return [row_to_dict(row) for row in rows]
+        # Converte para lista e adiciona itens de cada orçamento
+        quotations = []
+        for row in rows:
+            quotation = row_to_dict(row)
+            # Busca itens do orçamento
+            items_rows = await conn.fetch("""
+                SELECT qi.*,
+                    p.name as product_name_full,
+                    p.code as product_code,
+                    p.barcode_ean as product_barcode,
+                    p.sale_price as product_sale_price
+                FROM quotation_items qi
+                LEFT JOIN products p ON qi.product_id = p.id
+                WHERE qi.quotation_id = $1
+                ORDER BY qi.created_at
+            """, quotation["id"])
+            quotation["items"] = [row_to_dict(item) for item in items_rows]
+            quotations.append(quotation)
+
+        return quotations
     finally:
         await conn.close()
 
