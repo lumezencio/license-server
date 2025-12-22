@@ -421,6 +421,62 @@ CREATE TABLE IF NOT EXISTS sale_items (
 );
 
 -- =====================================================
+-- TABELA DE ORÇAMENTOS (QUOTATIONS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS quotations (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Identificação
+    quotation_number VARCHAR(20) UNIQUE NOT NULL,
+    quotation_date DATE NOT NULL,
+    valid_until DATE,
+    -- Relacionamentos
+    customer_id VARCHAR(36) REFERENCES customers(id),
+    seller_id VARCHAR(36) REFERENCES employees(id),
+    -- Valores
+    subtotal DECIMAL(15,2) DEFAULT 0,
+    discount_amount DECIMAL(15,2) DEFAULT 0,
+    discount_percent DECIMAL(5,2) DEFAULT 0,
+    freight_amount DECIMAL(15,2) DEFAULT 0,
+    total_amount DECIMAL(15,2) DEFAULT 0,
+    -- Pagamento
+    payment_method VARCHAR(50),
+    payment_terms VARCHAR(200),
+    installments INTEGER DEFAULT 1,
+    -- Status
+    quotation_status VARCHAR(20) DEFAULT 'pending',
+    -- Observações
+    notes TEXT,
+    internal_notes TEXT,
+    -- Conversão para venda
+    converted_to_sale BOOLEAN DEFAULT FALSE,
+    sale_id VARCHAR(36) REFERENCES sales(id),
+    converted_at TIMESTAMP,
+    -- Metadados
+    quotation_metadata JSONB
+);
+
+-- =====================================================
+-- ITENS DE ORÇAMENTO (QUOTATION_ITEMS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS quotation_items (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    quotation_id VARCHAR(36) NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+    product_id VARCHAR(36) REFERENCES products(id),
+    -- Dados do item
+    product_name VARCHAR(200) NOT NULL,
+    quantity DECIMAL(15,3) DEFAULT 1,
+    unit_price DECIMAL(15,2) DEFAULT 0,
+    discount_amount DECIMAL(15,2) DEFAULT 0,
+    discount_percent DECIMAL(5,2) DEFAULT 0,
+    total_amount DECIMAL(15,2) DEFAULT 0
+);
+
+-- =====================================================
 -- TABELA DE COMPRAS (PURCHASES)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS purchases (

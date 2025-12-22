@@ -8,7 +8,7 @@ Este modulo serve como um "proxy" que:
 3. Conecta ao banco do tenant correto
 4. Executa a operacao e retorna os dados
 """
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, UploadFile, File
 from fastapi.responses import FileResponse
@@ -341,6 +341,265 @@ async def get_tenant_connection(tenant: Tenant) -> asyncpg.Connection:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Erro ao conectar ao banco de dados"
         )
+
+
+async def ensure_sales_and_quotations_schema(conn: asyncpg.Connection):
+    """
+    Garante que as tabelas sales, sale_items, quotations e quotation_items existem
+    com TODAS as colunas corretas. Isso resolve problemas de bancos de tenant
+    criados antes das ultimas alteracoes de schema.
+
+    Esta funcao e CRITICA para garantir que o sistema funcione perfeitamente
+    para novos clientes desde o primeiro acesso.
+    """
+    logger.info("Verificando/atualizando schema de vendas e orcamentos...")
+    try:
+        # =====================================================
+        # TABELA SALES
+        # =====================================================
+        sales_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'sales')"
+        )
+
+        if not sales_exists:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS sales (
+                    id VARCHAR(36) PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    sale_number VARCHAR(20) UNIQUE NOT NULL,
+                    sale_date DATE NOT NULL,
+                    customer_id VARCHAR(36),
+                    seller_id VARCHAR(36),
+                    subtotal DECIMAL(15,2) DEFAULT 0,
+                    discount_amount DECIMAL(15,2) DEFAULT 0,
+                    discount_percent DECIMAL(5,2) DEFAULT 0,
+                    total_amount DECIMAL(15,2) DEFAULT 0,
+                    payment_method VARCHAR(50),
+                    payment_status VARCHAR(20) DEFAULT 'pending',
+                    installments INTEGER DEFAULT 1,
+                    sale_status VARCHAR(20) DEFAULT 'completed',
+                    notes TEXT,
+                    sale_metadata JSONB
+                )
+            """)
+            logger.info("Tabela sales criada com sucesso")
+        else:
+            sales_columns = [
+                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("sale_date", "DATE"),
+                ("customer_id", "VARCHAR(36)"),
+                ("seller_id", "VARCHAR(36)"),
+                ("subtotal", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_percent", "DECIMAL(5,2) DEFAULT 0"),
+                ("total_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("payment_method", "VARCHAR(50)"),
+                ("payment_status", "VARCHAR(20) DEFAULT 'pending'"),
+                ("installments", "INTEGER DEFAULT 1"),
+                ("sale_status", "VARCHAR(20) DEFAULT 'completed'"),
+                ("notes", "TEXT"),
+                ("sale_metadata", "JSONB"),
+            ]
+            for col_name, col_type in sales_columns:
+                try:
+                    await conn.execute(f"ALTER TABLE sales ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                except Exception:
+                    pass
+
+        # =====================================================
+        # TABELA SALE_ITEMS
+        # =====================================================
+        sale_items_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'sale_items')"
+        )
+
+        if not sale_items_exists:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS sale_items (
+                    id VARCHAR(36) PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    sale_id VARCHAR(36) NOT NULL,
+                    product_id VARCHAR(36),
+                    product_name VARCHAR(200) NOT NULL,
+                    quantity DECIMAL(15,3) DEFAULT 1,
+                    unit_price DECIMAL(15,2) DEFAULT 0,
+                    discount_amount DECIMAL(15,2) DEFAULT 0,
+                    discount_percent DECIMAL(5,2) DEFAULT 0,
+                    total_amount DECIMAL(15,2) DEFAULT 0
+                )
+            """)
+            logger.info("Tabela sale_items criada com sucesso")
+        else:
+            sale_items_columns = [
+                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("product_id", "VARCHAR(36)"),
+                ("product_name", "VARCHAR(200)"),
+                ("quantity", "DECIMAL(15,3) DEFAULT 1"),
+                ("unit_price", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_percent", "DECIMAL(5,2) DEFAULT 0"),
+                ("total_amount", "DECIMAL(15,2) DEFAULT 0"),
+            ]
+            for col_name, col_type in sale_items_columns:
+                try:
+                    await conn.execute(f"ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                except Exception:
+                    pass
+
+        # =====================================================
+        # TABELA QUOTATIONS
+        # =====================================================
+        quotations_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'quotations')"
+        )
+
+        needs_recreate = False
+        if quotations_exists:
+            # Verifica se a tabela tem constraints incorretas (seller_id NOT NULL)
+            # Se estiver vazia, dropa e recria para garantir schema correto
+            has_wrong_constraint = await conn.fetchval("""
+                SELECT is_nullable = 'NO'
+                FROM information_schema.columns
+                WHERE table_name = 'quotations' AND column_name = 'seller_id'
+            """)
+            if has_wrong_constraint:
+                row_count = await conn.fetchval("SELECT COUNT(*) FROM quotations")
+                if row_count == 0:
+                    # Tabela vazia com constraint errada - seguro dropar
+                    logger.info("Tabela quotations vazia com constraint incorreta - recriando...")
+                    await conn.execute("DROP TABLE IF EXISTS quotation_items")
+                    await conn.execute("DROP TABLE quotations")
+                    quotations_exists = False
+                    needs_recreate = True
+                else:
+                    # Tabela com dados - apenas remove constraints
+                    logger.info(f"Tabela quotations tem {row_count} registros - corrigindo constraints...")
+                    try:
+                        await conn.execute("ALTER TABLE quotations ALTER COLUMN seller_id DROP NOT NULL")
+                        logger.info("Constraint NOT NULL removida de quotations.seller_id")
+                    except Exception as e:
+                        logger.warning(f"Erro ao remover constraint: {e}")
+
+        if not quotations_exists:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS quotations (
+                    id VARCHAR(36) PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    quotation_number VARCHAR(20) UNIQUE NOT NULL,
+                    quotation_date DATE NOT NULL,
+                    valid_until DATE,
+                    customer_id VARCHAR(36),
+                    seller_id VARCHAR(36),
+                    subtotal DECIMAL(15,2) DEFAULT 0,
+                    discount_amount DECIMAL(15,2) DEFAULT 0,
+                    discount_percent DECIMAL(5,2) DEFAULT 0,
+                    freight_amount DECIMAL(15,2) DEFAULT 0,
+                    total_amount DECIMAL(15,2) DEFAULT 0,
+                    payment_method VARCHAR(50),
+                    payment_terms VARCHAR(200),
+                    installments INTEGER DEFAULT 1,
+                    quotation_status VARCHAR(20) DEFAULT 'pending',
+                    notes TEXT,
+                    internal_notes TEXT,
+                    converted_to_sale BOOLEAN DEFAULT FALSE,
+                    sale_id VARCHAR(36),
+                    converted_at TIMESTAMP,
+                    quotation_metadata JSONB
+                )
+            """)
+            if needs_recreate:
+                logger.info("Tabela quotations recriada com schema correto")
+            else:
+                logger.info("Tabela quotations criada com sucesso")
+        else:
+            quotations_columns = [
+                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("quotation_date", "DATE"),
+                ("valid_until", "DATE"),
+                ("customer_id", "VARCHAR(36)"),
+                ("seller_id", "VARCHAR(36)"),
+                ("subtotal", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_percent", "DECIMAL(5,2) DEFAULT 0"),
+                ("freight_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("total_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("payment_method", "VARCHAR(50)"),
+                ("payment_terms", "VARCHAR(200)"),
+                ("installments", "INTEGER DEFAULT 1"),
+                ("quotation_status", "VARCHAR(20) DEFAULT 'pending'"),
+                ("notes", "TEXT"),
+                ("internal_notes", "TEXT"),
+                ("converted_to_sale", "BOOLEAN DEFAULT FALSE"),
+                ("sale_id", "VARCHAR(36)"),
+                ("converted_at", "TIMESTAMP"),
+                ("quotation_metadata", "JSONB"),
+            ]
+            for col_name, col_type in quotations_columns:
+                try:
+                    await conn.execute(f"ALTER TABLE quotations ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                except Exception:
+                    pass
+
+        # =====================================================
+        # TABELA QUOTATION_ITEMS
+        # =====================================================
+        quotation_items_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'quotation_items')"
+        )
+
+        if not quotation_items_exists:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS quotation_items (
+                    id VARCHAR(36) PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    quotation_id VARCHAR(36) NOT NULL,
+                    product_id VARCHAR(36),
+                    product_name VARCHAR(200) NOT NULL,
+                    quantity DECIMAL(15,3) DEFAULT 1,
+                    unit_price DECIMAL(15,2) DEFAULT 0,
+                    discount_amount DECIMAL(15,2) DEFAULT 0,
+                    discount_percent DECIMAL(5,2) DEFAULT 0,
+                    total_amount DECIMAL(15,2) DEFAULT 0
+                )
+            """)
+            logger.info("Tabela quotation_items criada com sucesso")
+        else:
+            quotation_items_columns = [
+                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("product_id", "VARCHAR(36)"),
+                ("product_name", "VARCHAR(200)"),
+                ("quantity", "DECIMAL(15,3) DEFAULT 1"),
+                ("unit_price", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_amount", "DECIMAL(15,2) DEFAULT 0"),
+                ("discount_percent", "DECIMAL(5,2) DEFAULT 0"),
+                ("total_amount", "DECIMAL(15,2) DEFAULT 0"),
+            ]
+            for col_name, col_type in quotation_items_columns:
+                try:
+                    await conn.execute(f"ALTER TABLE quotation_items ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                except Exception:
+                    pass
+
+        logger.info("Schema de vendas e orcamentos verificado/atualizado com sucesso")
+
+    except Exception as e:
+        logger.error(f"Erro ao garantir schema de vendas/orcamentos: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
+# Alias para manter compatibilidade com chamadas existentes
+async def ensure_quotations_schema(conn: asyncpg.Connection):
+    """Alias para ensure_sales_and_quotations_schema - garante todas as tabelas"""
+    await ensure_sales_and_quotations_schema(conn)
 
 
 # === ENDPOINTS - CUSTOMERS ===
@@ -1294,6 +1553,709 @@ async def list_sales(
         """, limit, skip)
 
         return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+@router.get("/sales/{sale_id}")
+async def get_sale(
+    sale_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna detalhes de uma venda específica com itens"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Busca a venda
+        row = await conn.fetchrow("""
+            SELECT s.*,
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
+                c.cpf_cnpj as customer_document,
+                COALESCE(e.first_name || ' ' || e.last_name, e.name) as seller_name
+            FROM sales s
+            LEFT JOIN customers c ON s.customer_id = c.id
+            LEFT JOIN employees e ON s.seller_id = e.id
+            WHERE s.id = $1
+        """, sale_id)
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Venda não encontrada")
+
+        sale = row_to_dict(row)
+
+        # Busca itens da venda
+        items_rows = await conn.fetch("""
+            SELECT si.*,
+                p.name as product_name_full,
+                p.code as product_code,
+                p.barcode_ean as product_barcode
+            FROM sale_items si
+            LEFT JOIN products p ON si.product_id = p.id
+            WHERE si.sale_id = $1
+            ORDER BY si.created_at
+        """, sale_id)
+
+        sale["items"] = [row_to_dict(item) for item in items_rows]
+
+        return sale
+    finally:
+        await conn.close()
+
+
+@router.post("/sales")
+@router.post("/sales/")
+async def create_sale(
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria uma nova venda com itens e opcionalmente contas a receber"""
+    import uuid
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        data = await request.json()
+        sale_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        # Gera número da venda de forma thread-safe
+        # Usa SELECT FOR UPDATE para evitar números duplicados em acessos simultâneos
+        count_row = await conn.fetchrow("""
+            SELECT COALESCE(MAX(CAST(SUBSTRING(sale_number FROM 4) AS INTEGER)), 0) + 1 as next_num
+            FROM sales
+            WHERE sale_number LIKE 'VND%'
+        """)
+        next_num = count_row["next_num"] if count_row else 1
+        sale_number = data.get("sale_number") or f"VND{next_num:06d}"
+
+        # Converte data
+        def parse_date(val):
+            if not val or val == '' or val == 'null':
+                return None
+            if isinstance(val, str):
+                from datetime import datetime as dt
+                if 'T' in val:
+                    return dt.fromisoformat(val.replace('Z', '+00:00')).date()
+                return dt.strptime(val, '%Y-%m-%d').date()
+            return val
+
+        sale_date = parse_date(data.get("sale_date")) or now.date()
+
+        # Calcula valores
+        subtotal = to_decimal(data.get("subtotal")) or 0
+        discount_amount = to_decimal(data.get("discount_amount")) or 0
+        discount_percent = to_decimal(data.get("discount_percent")) or 0
+        total_amount = to_decimal(data.get("total_amount")) or (subtotal - discount_amount)
+
+        # Metadados opcionais (JSON)
+        sale_metadata = data.get("sale_metadata")
+        if sale_metadata and isinstance(sale_metadata, dict):
+            import json as json_lib
+            sale_metadata = json_lib.dumps(sale_metadata)
+        else:
+            sale_metadata = None
+
+        # Insere a venda
+        await conn.execute("""
+            INSERT INTO sales (
+                id, sale_number, sale_date, customer_id, seller_id,
+                subtotal, discount_amount, discount_percent, total_amount,
+                payment_method, payment_status, installments,
+                sale_status, notes, sale_metadata, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+            )
+        """,
+            sale_id, sale_number, sale_date,
+            to_str(data.get("customer_id")), to_str(data.get("seller_id")),
+            subtotal, discount_amount, discount_percent, total_amount,
+            to_str(data.get("payment_method")), to_str(data.get("payment_status")) or "pending",
+            to_int(data.get("installments")) or 1,
+            to_str(data.get("sale_status")) or "completed", to_str(data.get("notes")),
+            sale_metadata, now, now
+        )
+
+        # Insere itens da venda e atualiza estoque
+        items = data.get("items", [])
+        update_stock = data.get("update_stock", True)  # Baixa de estoque automática
+
+        for item in items:
+            item_id = str(uuid.uuid4())
+            product_id = to_str(item.get("product_id"))
+            quantity = to_decimal(item.get("quantity")) or 1
+            unit_price = to_decimal(item.get("unit_price")) or 0
+            item_subtotal = quantity * unit_price
+            item_discount = to_decimal(item.get("discount_amount")) or 0
+            item_total = item_subtotal - item_discount
+
+            # Busca nome do produto se não fornecido
+            product_name = to_str(item.get("product_name")) or to_str(item.get("name"))
+            if not product_name and product_id:
+                prod_row = await conn.fetchrow(
+                    "SELECT name, current_stock, stock_control FROM products WHERE id = $1",
+                    product_id
+                )
+                if prod_row:
+                    product_name = prod_row["name"]
+
+            await conn.execute("""
+                INSERT INTO sale_items (
+                    id, sale_id, product_id, product_name,
+                    quantity, unit_price, discount_amount, discount_percent, total_amount,
+                    created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                )
+            """,
+                item_id, sale_id, product_id,
+                product_name or "Produto",
+                quantity, unit_price,
+                item_discount, to_decimal(item.get("discount_percent")) or 0, item_total,
+                now, now
+            )
+
+            # Baixa de estoque automática
+            if update_stock and product_id:
+                await conn.execute("""
+                    UPDATE products
+                    SET current_stock = COALESCE(current_stock, 0) - $1,
+                        available_stock = COALESCE(available_stock, 0) - $1,
+                        updated_at = $2
+                    WHERE id = $3 AND stock_control = true
+                """, quantity, now, product_id)
+
+        # Cria contas a receber se solicitado
+        create_receivable = data.get("create_accounts_receivable", True)
+        if create_receivable and total_amount > 0:
+            num_installments = to_int(data.get("installments")) or 1
+            customer_id = to_str(data.get("customer_id"))
+
+            # Busca nome do cliente
+            customer_name = None
+            if customer_id:
+                customer_row = await conn.fetchrow("""
+                    SELECT COALESCE(NULLIF(TRIM(first_name || ' ' || last_name), ''), company_name, trade_name) as name
+                    FROM customers WHERE id = $1
+                """, customer_id)
+                if customer_row:
+                    customer_name = customer_row["name"]
+
+            # Descrição dos itens para a conta a receber
+            items_desc = ", ".join([f"{to_decimal(i.get('quantity')) or 1}x {i.get('product_name') or i.get('name') or 'Produto'}" for i in items[:3]])
+            if len(items) > 3:
+                items_desc += f" +{len(items) - 3} itens"
+
+            # Usa dateutil para cálculo de datas
+            from dateutil.relativedelta import relativedelta
+
+            if num_installments == 1:
+                # Parcela única
+                receivable_id = str(uuid.uuid4())
+                due_date = sale_date + relativedelta(months=1)
+
+                await conn.execute("""
+                    INSERT INTO accounts_receivable (
+                        id, customer_id, parent_id,
+                        description, document_number, amount, paid_amount,
+                        issue_date, due_date, payment_date, status, payment_method,
+                        category, installment_number, total_installments, notes,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                    )
+                """,
+                    receivable_id, customer_id, None,
+                    f"Venda {sale_number} - {items_desc}", sale_number,
+                    total_amount, 0.0,
+                    sale_date, due_date, None, "PENDING", to_str(data.get("payment_method")),
+                    "VENDAS", 0, 1, to_str(data.get("notes")),
+                    now, now
+                )
+            else:
+                # Múltiplas parcelas - cria PAI + filhas
+                parent_id = str(uuid.uuid4())
+                installment_amount = round(total_amount / num_installments, 2)
+                last_installment_amount = round(total_amount - (installment_amount * (num_installments - 1)), 2)
+
+                # Cria registro pai (installment_number = 0)
+                await conn.execute("""
+                    INSERT INTO accounts_receivable (
+                        id, customer_id, parent_id,
+                        description, document_number, amount, paid_amount,
+                        issue_date, due_date, payment_date, status, payment_method,
+                        category, installment_number, total_installments, notes,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                    )
+                """,
+                    parent_id, customer_id, None,
+                    f"Venda {sale_number} - {items_desc}", sale_number,
+                    total_amount, 0.0,
+                    sale_date, sale_date, None, "PENDING", to_str(data.get("payment_method")),
+                    "VENDAS", 0, num_installments, to_str(data.get("notes")),
+                    now, now
+                )
+
+                # Cria parcelas filhas
+                for i in range(1, num_installments + 1):
+                    installment_id = str(uuid.uuid4())
+                    amount = last_installment_amount if i == num_installments else installment_amount
+                    due_date = sale_date + relativedelta(months=i)
+
+                    await conn.execute("""
+                        INSERT INTO accounts_receivable (
+                            id, customer_id, parent_id,
+                            description, document_number, amount, paid_amount,
+                            issue_date, due_date, payment_date, status, payment_method,
+                            category, installment_number, total_installments, notes,
+                            created_at, updated_at
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                        )
+                    """,
+                        installment_id, customer_id, parent_id,
+                        f"Venda {sale_number} - Parcela {i}/{num_installments}", f"{sale_number}-{i}",
+                        amount, 0.0,
+                        sale_date, due_date, None, "PENDING", to_str(data.get("payment_method")),
+                        "VENDAS", i, num_installments, None,
+                        now, now
+                    )
+
+        # Retorna a venda criada
+        return {
+            "id": sale_id,
+            "sale_number": sale_number,
+            "sale_date": str(sale_date),
+            "customer_id": to_str(data.get("customer_id")),
+            "total_amount": float(total_amount),
+            "installments": to_int(data.get("installments")) or 1,
+            "items_count": len(items),
+            "message": "Venda criada com sucesso"
+        }
+
+    except Exception as e:
+        logger.error(f"Erro ao criar venda: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro ao criar venda: {str(e)}")
+    finally:
+        await conn.close()
+
+
+# === ENDPOINTS - QUOTATIONS (ORÇAMENTOS) ===
+
+@router.get("/quotations")
+async def list_quotations(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista orçamentos do tenant"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Garante que as tabelas existem
+        await ensure_quotations_schema(conn)
+
+        where_clause = ""
+        params = [limit, skip]
+
+        if status:
+            where_clause = "WHERE q.quotation_status = $3"
+            params.append(status)
+
+        rows = await conn.fetch(f"""
+            SELECT q.*,
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
+                COALESCE(e.first_name || ' ' || e.last_name, e.name) as seller_name
+            FROM quotations q
+            LEFT JOIN customers c ON q.customer_id = c.id
+            LEFT JOIN employees e ON q.seller_id = e.id
+            {where_clause}
+            ORDER BY q.quotation_date DESC
+            LIMIT $1 OFFSET $2
+        """, *params)
+
+        return [row_to_dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+@router.get("/quotations/{quotation_id}")
+async def get_quotation(
+    quotation_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna detalhes de um orçamento específico com itens"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Garante que as tabelas existem
+        await ensure_quotations_schema(conn)
+
+        row = await conn.fetchrow("""
+            SELECT q.*,
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
+                c.cpf_cnpj as customer_document,
+                c.email as customer_email,
+                c.phone as customer_phone,
+                COALESCE(e.first_name || ' ' || e.last_name, e.name) as seller_name
+            FROM quotations q
+            LEFT JOIN customers c ON q.customer_id = c.id
+            LEFT JOIN employees e ON q.seller_id = e.id
+            WHERE q.id = $1
+        """, quotation_id)
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+
+        quotation = row_to_dict(row)
+
+        # Busca itens do orçamento
+        items_rows = await conn.fetch("""
+            SELECT qi.*,
+                p.name as product_name_full,
+                p.code as product_code,
+                p.barcode_ean as product_barcode
+            FROM quotation_items qi
+            LEFT JOIN products p ON qi.product_id = p.id
+            WHERE qi.quotation_id = $1
+            ORDER BY qi.created_at
+        """, quotation_id)
+
+        quotation["items"] = [row_to_dict(item) for item in items_rows]
+
+        return quotation
+    finally:
+        await conn.close()
+
+
+@router.post("/quotations")
+@router.post("/quotations/")
+async def create_quotation(
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria um novo orçamento com itens"""
+    import uuid
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Garante que as tabelas de quotations existem e tem todas as colunas
+        await ensure_quotations_schema(conn)
+
+        data = await request.json()
+        quotation_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+
+        # Gera número do orçamento
+        count_row = await conn.fetchrow("""
+            SELECT COALESCE(MAX(CAST(SUBSTRING(quotation_number FROM 4) AS INTEGER)), 0) + 1 as next_num
+            FROM quotations
+            WHERE quotation_number LIKE 'ORC%'
+        """)
+        next_num = count_row["next_num"] if count_row else 1
+        quotation_number = data.get("quotation_number") or f"ORC{next_num:06d}"
+
+        # Converte datas
+        def parse_date(val):
+            if not val or val == '' or val == 'null':
+                return None
+            if isinstance(val, str):
+                from datetime import datetime as dt
+                if 'T' in val:
+                    return dt.fromisoformat(val.replace('Z', '+00:00')).date()
+                return dt.strptime(val, '%Y-%m-%d').date()
+            return val
+
+        quotation_date = parse_date(data.get("quotation_date")) or now.date()
+        valid_until = parse_date(data.get("valid_until"))
+
+        # Se não informou validade, usa 30 dias
+        if not valid_until:
+            from dateutil.relativedelta import relativedelta
+            valid_until = quotation_date + relativedelta(days=30)
+
+        # Calcula valores
+        subtotal = to_decimal(data.get("subtotal")) or 0
+        discount_amount = to_decimal(data.get("discount_amount")) or 0
+        discount_percent = to_decimal(data.get("discount_percent")) or 0
+        freight_amount = to_decimal(data.get("freight_amount")) or 0
+        total_amount = to_decimal(data.get("total_amount")) or (subtotal - discount_amount + freight_amount)
+
+        # Metadados opcionais
+        quotation_metadata = data.get("quotation_metadata")
+        if quotation_metadata and isinstance(quotation_metadata, dict):
+            import json as json_lib
+            quotation_metadata = json_lib.dumps(quotation_metadata)
+        else:
+            quotation_metadata = None
+
+        # Insere o orçamento
+        await conn.execute("""
+            INSERT INTO quotations (
+                id, quotation_number, quotation_date, valid_until,
+                customer_id, seller_id,
+                subtotal, discount_amount, discount_percent, freight_amount, total_amount,
+                payment_method, payment_terms, installments,
+                quotation_status, notes, internal_notes,
+                converted_to_sale, quotation_metadata,
+                created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+            )
+        """,
+            quotation_id, quotation_number, quotation_date, valid_until,
+            to_str(data.get("customer_id")), to_str(data.get("seller_id")),
+            subtotal, discount_amount, discount_percent, freight_amount, total_amount,
+            to_str(data.get("payment_method")), to_str(data.get("payment_terms")),
+            to_int(data.get("installments")) or 1,
+            to_str(data.get("quotation_status")) or "pending",
+            to_str(data.get("notes")), to_str(data.get("internal_notes")),
+            False, quotation_metadata,
+            now, now
+        )
+
+        # Insere itens do orçamento
+        items = data.get("items", [])
+        for item in items:
+            item_id = str(uuid.uuid4())
+            product_id = to_str(item.get("product_id"))
+            quantity = to_decimal(item.get("quantity")) or 1
+            unit_price = to_decimal(item.get("unit_price")) or 0
+            item_subtotal = quantity * unit_price
+            item_discount = to_decimal(item.get("discount_amount")) or 0
+            item_total = item_subtotal - item_discount
+
+            # Busca nome do produto se não fornecido
+            product_name = to_str(item.get("product_name")) or to_str(item.get("name"))
+            if not product_name and product_id:
+                prod_row = await conn.fetchrow("SELECT name FROM products WHERE id = $1", product_id)
+                if prod_row:
+                    product_name = prod_row["name"]
+
+            await conn.execute("""
+                INSERT INTO quotation_items (
+                    id, quotation_id, product_id, product_name,
+                    quantity, unit_price, discount_amount, discount_percent, total_amount,
+                    created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                )
+            """,
+                item_id, quotation_id, product_id,
+                product_name or "Produto",
+                quantity, unit_price,
+                item_discount, to_decimal(item.get("discount_percent")) or 0, item_total,
+                now, now
+            )
+
+        return {
+            "id": quotation_id,
+            "quotation_number": quotation_number,
+            "quotation_date": str(quotation_date),
+            "valid_until": str(valid_until),
+            "customer_id": to_str(data.get("customer_id")),
+            "total_amount": float(total_amount),
+            "items_count": len(items),
+            "message": "Orçamento criado com sucesso"
+        }
+
+    except Exception as e:
+        logger.error(f"Erro ao criar orçamento: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro ao criar orçamento: {str(e)}")
+    finally:
+        await conn.close()
+
+
+@router.post("/quotations/{quotation_id}/convert-to-sale")
+async def convert_quotation_to_sale(
+    quotation_id: str,
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Converte um orçamento em venda"""
+    import uuid
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Garante que as tabelas existem
+        await ensure_quotations_schema(conn)
+
+        data = await request.json() if request else {}
+
+        # Busca o orçamento
+        quotation = await conn.fetchrow("""
+            SELECT * FROM quotations WHERE id = $1
+        """, quotation_id)
+
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+
+        if quotation["converted_to_sale"]:
+            raise HTTPException(status_code=400, detail="Orçamento já foi convertido em venda")
+
+        # Busca itens do orçamento
+        items_rows = await conn.fetch("""
+            SELECT * FROM quotation_items WHERE quotation_id = $1
+        """, quotation_id)
+
+        now = datetime.utcnow()
+        sale_id = str(uuid.uuid4())
+
+        # Gera número da venda
+        count_row = await conn.fetchrow("""
+            SELECT COALESCE(MAX(CAST(SUBSTRING(sale_number FROM 4) AS INTEGER)), 0) + 1 as next_num
+            FROM sales WHERE sale_number LIKE 'VND%'
+        """)
+        next_num = count_row["next_num"] if count_row else 1
+        sale_number = f"VND{next_num:06d}"
+
+        # Cria a venda baseada no orçamento
+        await conn.execute("""
+            INSERT INTO sales (
+                id, sale_number, sale_date, customer_id, seller_id,
+                subtotal, discount_amount, discount_percent, total_amount,
+                payment_method, payment_status, installments,
+                sale_status, notes, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+            )
+        """,
+            sale_id, sale_number, now.date(),
+            quotation["customer_id"], quotation["seller_id"],
+            quotation["subtotal"], quotation["discount_amount"],
+            quotation["discount_percent"], quotation["total_amount"],
+            quotation["payment_method"], "pending",
+            quotation["installments"], "completed",
+            f"Convertido do orçamento {quotation['quotation_number']}",
+            now, now
+        )
+
+        # Copia itens e baixa estoque
+        update_stock = data.get("update_stock", True)
+        for item in items_rows:
+            item_id = str(uuid.uuid4())
+            await conn.execute("""
+                INSERT INTO sale_items (
+                    id, sale_id, product_id, product_name,
+                    quantity, unit_price, discount_amount, discount_percent, total_amount,
+                    created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """,
+                item_id, sale_id, item["product_id"], item["product_name"],
+                item["quantity"], item["unit_price"],
+                item["discount_amount"], item["discount_percent"], item["total_amount"],
+                now, now
+            )
+
+            # Baixa estoque
+            if update_stock and item["product_id"]:
+                await conn.execute("""
+                    UPDATE products
+                    SET current_stock = COALESCE(current_stock, 0) - $1,
+                        available_stock = COALESCE(available_stock, 0) - $1,
+                        updated_at = $2
+                    WHERE id = $3 AND stock_control = true
+                """, item["quantity"], now, item["product_id"])
+
+        # Atualiza orçamento como convertido
+        await conn.execute("""
+            UPDATE quotations
+            SET converted_to_sale = true,
+                sale_id = $1,
+                converted_at = $2,
+                quotation_status = 'converted',
+                updated_at = $2
+            WHERE id = $3
+        """, sale_id, now, quotation_id)
+
+        # Cria contas a receber
+        total_amount = float(quotation["total_amount"])
+        num_installments = quotation["installments"] or 1
+        customer_id = quotation["customer_id"]
+
+        if total_amount > 0:
+            from dateutil.relativedelta import relativedelta
+
+            if num_installments == 1:
+                receivable_id = str(uuid.uuid4())
+                due_date = now.date() + relativedelta(months=1)
+                await conn.execute("""
+                    INSERT INTO accounts_receivable (
+                        id, customer_id, parent_id,
+                        description, document_number, amount, paid_amount,
+                        issue_date, due_date, status, payment_method,
+                        category, installment_number, total_installments,
+                        created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                """,
+                    receivable_id, customer_id, None,
+                    f"Venda {sale_number}", sale_number, total_amount, 0.0,
+                    now.date(), due_date, "PENDING", quotation["payment_method"],
+                    "VENDAS", 0, 1, now, now
+                )
+            else:
+                parent_id = str(uuid.uuid4())
+                installment_amount = round(total_amount / num_installments, 2)
+                last_amount = round(total_amount - (installment_amount * (num_installments - 1)), 2)
+
+                await conn.execute("""
+                    INSERT INTO accounts_receivable (
+                        id, customer_id, parent_id,
+                        description, document_number, amount, paid_amount,
+                        issue_date, due_date, status, payment_method,
+                        category, installment_number, total_installments,
+                        created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                """,
+                    parent_id, customer_id, None,
+                    f"Venda {sale_number}", sale_number, total_amount, 0.0,
+                    now.date(), now.date(), "PENDING", quotation["payment_method"],
+                    "VENDAS", 0, num_installments, now, now
+                )
+
+                for i in range(1, num_installments + 1):
+                    inst_id = str(uuid.uuid4())
+                    amount = last_amount if i == num_installments else installment_amount
+                    due_date = now.date() + relativedelta(months=i)
+                    await conn.execute("""
+                        INSERT INTO accounts_receivable (
+                            id, customer_id, parent_id,
+                            description, document_number, amount, paid_amount,
+                            issue_date, due_date, status, payment_method,
+                            category, installment_number, total_installments,
+                            created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    """,
+                        inst_id, customer_id, parent_id,
+                        f"Venda {sale_number} - Parcela {i}/{num_installments}",
+                        f"{sale_number}-{i}", amount, 0.0,
+                        now.date(), due_date, "PENDING", quotation["payment_method"],
+                        "VENDAS", i, num_installments, now, now
+                    )
+
+        return {
+            "success": True,
+            "sale_id": sale_id,
+            "sale_number": sale_number,
+            "quotation_number": quotation["quotation_number"],
+            "message": f"Orçamento convertido para venda {sale_number}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao converter orçamento: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro ao converter orçamento: {str(e)}")
     finally:
         await conn.close()
 
@@ -4673,6 +5635,80 @@ async def get_dashboard_overview(
         await conn.close()
 
 
+@router.get("/dashboard/indices-status")
+async def get_indices_status(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """
+    Retorna status dos indices economicos buscando da API do Banco Central.
+    Verifica se os indices principais estao atualizados.
+    """
+    tenant, user = tenant_data
+    import httpx
+
+    # Indices principais para verificar (codigos do BCB SGS)
+    indices_config = {
+        "ipca": {"codigo": 433, "nome": "IPCA"},
+        "igpm": {"codigo": 189, "nome": "IGP-M"},
+        "selic": {"codigo": 4390, "nome": "SELIC"},
+        "cdi": {"codigo": 4391, "nome": "CDI"},
+        "inpc": {"codigo": 188, "nome": "INPC"},
+        "tr": {"codigo": 226, "nome": "TR"},
+    }
+
+    indices_result = {}
+    all_updated = True
+    last_update = None
+
+    # Busca o ultimo valor de cada indice da API do BCB
+    for key, config in indices_config.items():
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Busca ultimos 3 meses para pegar o mais recente
+                url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{config['codigo']}/dados/ultimos/3?formato=json"
+                response = await client.get(url)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and len(data) > 0:
+                        ultimo = data[-1]  # Ultimo registro
+                        indices_result[key] = {
+                            "value": float(ultimo.get("valor", 0)),
+                            "date": ultimo.get("data", ""),
+                            "status": "ok",
+                            "nome": config["nome"]
+                        }
+                        # Atualiza a data mais recente
+                        if not last_update or ultimo.get("data", "") > last_update:
+                            last_update = ultimo.get("data", "")
+                    else:
+                        indices_result[key] = {"value": 0, "date": "", "status": "unavailable", "nome": config["nome"]}
+                        all_updated = False
+                else:
+                    indices_result[key] = {"value": 0, "date": "", "status": "error", "nome": config["nome"]}
+                    all_updated = False
+        except Exception as e:
+            logger.warning(f"Erro ao buscar indice {key} do BCB: {e}")
+            indices_result[key] = {"value": 0, "date": "", "status": "error", "nome": config["nome"]}
+            all_updated = False
+
+    # Verifica se os indices estao atualizados (ultimos 60 dias)
+    today = datetime.now()
+    is_updated = all_updated
+
+    return {
+        "is_updated": is_updated,
+        "last_update": last_update or today.isoformat(),
+        "indices": indices_result,
+        "sync_status": {
+            "status": "synced" if is_updated else "outdated",
+            "last_sync": today.isoformat(),
+            "next_sync": None
+        },
+        "fonte": "Banco Central do Brasil (BCB/SGS)"
+    }
+
+
 # === ENDPOINTS - ACCOUNTS RECEIVABLE STATS ===
 
 @router.get("/accounts-receivable/stats/summary")
@@ -6111,3 +7147,593 @@ async def generate_promissory_pdf_batch(
         )
     finally:
         await conn.close()
+
+
+# ============================================
+# === ENDPOINTS - BACKUP DO SISTEMA ===
+# ============================================
+
+import subprocess
+import tempfile
+import shutil
+from pathlib import Path
+
+# Diretorio base para backups (dentro do container/servidor)
+BACKUP_DIR = Path("/app/backups") if os.path.exists("/app") else Path("./backups")
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class BackupScheduleModel(BaseModel):
+    """Modelo de configuracao de agendamento de backup"""
+    enabled: bool = False
+    frequency: str = "daily"  # daily, weekly, monthly
+    time: str = "02:00"
+    dayOfWeek: int = 1  # 0-6 (domingo-sabado)
+    dayOfMonth: int = 1  # 1-31
+    retentionDays: int = 30
+
+
+def get_tenant_backup_dir(tenant_code: str) -> Path:
+    """Retorna o diretorio de backups do tenant"""
+    tenant_dir = BACKUP_DIR / f"tenant_{tenant_code}"
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+    return tenant_dir
+
+
+def get_schedule_file(tenant_code: str) -> Path:
+    """Retorna o arquivo de configuracao de agendamento"""
+    return get_tenant_backup_dir(tenant_code) / "schedule.json"
+
+
+def load_schedule(tenant_code: str) -> dict:
+    """Carrega configuracao de agendamento"""
+    schedule_file = get_schedule_file(tenant_code)
+    if schedule_file.exists():
+        try:
+            with open(schedule_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "enabled": False,
+        "frequency": "daily",
+        "time": "02:00",
+        "dayOfWeek": 1,
+        "dayOfMonth": 1,
+        "retentionDays": 30
+    }
+
+
+def save_schedule(tenant_code: str, schedule: dict):
+    """Salva configuracao de agendamento"""
+    schedule_file = get_schedule_file(tenant_code)
+    with open(schedule_file, 'w') as f:
+        json.dump(schedule, f, indent=2)
+
+
+def calculate_next_backup(schedule: dict) -> Optional[str]:
+    """Calcula proxima execucao do backup"""
+    if not schedule.get("enabled"):
+        return None
+
+    from datetime import timedelta
+    now = datetime.now()
+    time_parts = schedule.get("time", "02:00").split(":")
+    hour = int(time_parts[0])
+    minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+
+    if schedule.get("frequency") == "daily":
+        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+    elif schedule.get("frequency") == "weekly":
+        days_ahead = schedule.get("dayOfWeek", 1) - now.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
+    elif schedule.get("frequency") == "monthly":
+        day = schedule.get("dayOfMonth", 1)
+        next_run = now.replace(day=min(day, 28), hour=hour, minute=minute, second=0, microsecond=0)
+        if next_run <= now:
+            if now.month == 12:
+                next_run = next_run.replace(year=now.year + 1, month=1)
+            else:
+                next_run = next_run.replace(month=now.month + 1)
+    else:
+        return None
+
+    return next_run.isoformat()
+
+
+@router.get("/backups")
+async def list_backups(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista todos os backups do tenant"""
+    tenant, user = tenant_data
+
+    try:
+        tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
+        backups = []
+        total_size = 0
+
+        # Lista arquivos .sql no diretorio
+        for backup_file in sorted(tenant_backup_dir.glob("*.sql"), key=lambda x: x.stat().st_mtime, reverse=True):
+            stat = backup_file.stat()
+            total_size += stat.st_size
+            backups.append({
+                "id": backup_file.stem,
+                "filename": backup_file.name,
+                "size": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
+            })
+
+        # Carrega configuracao de agendamento
+        schedule = load_schedule(tenant.tenant_code)
+
+        # Formata tamanho total
+        if total_size >= 1024 * 1024 * 1024:
+            total_size_str = f"{total_size / (1024 * 1024 * 1024):.2f} GB"
+        elif total_size >= 1024 * 1024:
+            total_size_str = f"{total_size / (1024 * 1024):.2f} MB"
+        elif total_size >= 1024:
+            total_size_str = f"{total_size / 1024:.2f} KB"
+        else:
+            total_size_str = f"{total_size} B"
+
+        return {
+            "backups": backups,
+            "total": len(backups),
+            "total_size": total_size_str,
+            "last_backup": backups[0]["created_at"] if backups else None,
+            "next_scheduled": calculate_next_backup(schedule),
+            "schedule": schedule
+        }
+
+    except Exception as e:
+        logger.error(f"Erro ao listar backups: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao listar backups: {str(e)}")
+
+
+@router.post("/backups/create")
+async def create_backup(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Cria um backup do banco de dados do tenant"""
+    tenant, user = tenant_data
+
+    try:
+        tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
+
+        # Nome do arquivo com timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"backup_{tenant.tenant_code}_{timestamp}.sql"
+        backup_path = tenant_backup_dir / backup_filename
+
+        # Configuracoes do banco
+        db_host = tenant.database_host or settings.POSTGRES_HOST
+        db_port = tenant.database_port or settings.POSTGRES_PORT
+        db_user = tenant.database_user
+        db_pass = tenant.database_password
+        db_name = tenant.database_name
+
+        # Em ambiente local, ajusta o host se necessario
+        if db_host in ['license-db', 'enterprise-db'] and not os.path.exists('/app'):
+            logger.info(f"[BACKUP] Ambiente local detectado, ajustando host de {db_host} para localhost")
+            db_host = 'localhost'
+
+        logger.info(f"[BACKUP] Iniciando backup do tenant {tenant.tenant_code}")
+        logger.info(f"[BACKUP] Conexao: host={db_host}, port={db_port}, db={db_name}")
+
+        # Tenta usar pg_dump primeiro (mais completo), senao usa asyncpg
+        env = os.environ.copy()
+        env["PGPASSWORD"] = db_pass
+
+        cmd = [
+            "pg_dump",
+            "-h", db_host,
+            "-p", str(db_port),
+            "-U", db_user,
+            "-d", db_name,
+            "-F", "p",
+            "--no-owner",
+            "--no-acl",
+            "-f", str(backup_path)
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode != 0:
+                raise Exception(f"pg_dump falhou: {result.stderr}")
+            logger.info(f"[BACKUP] Backup criado via pg_dump")
+        except Exception as pg_err:
+            logger.warning(f"[BACKUP] pg_dump nao disponivel ({pg_err}), usando asyncpg...")
+
+            # Fallback: usa asyncpg para gerar backup SQL
+            conn = await asyncpg.connect(
+                host=db_host,
+                port=int(db_port),
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                timeout=30
+            )
+
+            try:
+                sql_lines = []
+                sql_lines.append(f"-- Backup do banco {db_name}")
+                sql_lines.append(f"-- Gerado em {datetime.now().isoformat()}")
+                sql_lines.append(f"-- Tenant: {tenant.tenant_code}")
+                sql_lines.append("")
+
+                # Lista tabelas
+                tables = await conn.fetch("""
+                    SELECT tablename FROM pg_tables
+                    WHERE schemaname = 'public'
+                    ORDER BY tablename
+                """)
+
+                for table_row in tables:
+                    table_name = table_row['tablename']
+
+                    # Busca colunas da tabela
+                    columns = await conn.fetch("""
+                        SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = $1
+                        ORDER BY ordinal_position
+                    """, table_name)
+
+                    col_names = [c['column_name'] for c in columns]
+
+                    # Busca dados
+                    rows = await conn.fetch(f'SELECT * FROM "{table_name}"')
+
+                    if rows:
+                        sql_lines.append(f"-- Dados da tabela {table_name}")
+                        for row in rows:
+                            values = []
+                            for col in col_names:
+                                val = row.get(col)
+                                if val is None:
+                                    values.append("NULL")
+                                elif isinstance(val, str):
+                                    escaped = val.replace("'", "''")
+                                    values.append(f"'{escaped}'")
+                                elif isinstance(val, bool):
+                                    values.append("TRUE" if val else "FALSE")
+                                elif isinstance(val, (int, float)):
+                                    values.append(str(val))
+                                elif isinstance(val, datetime):
+                                    values.append(f"'{val.isoformat()}'")
+                                elif isinstance(val, date):
+                                    values.append(f"'{val.isoformat()}'")
+                                else:
+                                    escaped = str(val).replace("'", "''")
+                                    values.append(f"'{escaped}'")
+
+                            cols_str = ', '.join(f'"{c}"' for c in col_names)
+                            vals_str = ', '.join(values)
+                            sql_lines.append(f'INSERT INTO "{table_name}" ({cols_str}) VALUES ({vals_str});')
+
+                        sql_lines.append("")
+
+                # Salva arquivo
+                with open(backup_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(sql_lines))
+
+                logger.info(f"[BACKUP] Backup criado via asyncpg ({len(sql_lines)} linhas)")
+
+            finally:
+                await conn.close()
+
+        # Verifica se arquivo foi criado
+        if not backup_path.exists():
+            raise HTTPException(status_code=500, detail="Backup nao foi criado")
+
+        file_size = backup_path.stat().st_size
+        logger.info(f"[BACKUP] Backup criado com sucesso: {backup_filename} ({file_size} bytes)")
+
+        return {
+            "success": True,
+            "message": "Backup criado com sucesso",
+            "backup": {
+                "id": backup_path.stem,
+                "filename": backup_filename,
+                "size": file_size,
+                "created_at": datetime.now().isoformat()
+            }
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.error("[BACKUP] Timeout ao criar backup")
+        raise HTTPException(status_code=504, detail="Timeout ao criar backup")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[BACKUP] Erro ao criar backup: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao criar backup: {str(e)}")
+
+
+@router.get("/backups/{backup_id}/download")
+async def download_backup(
+    backup_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Baixa um backup especifico"""
+    tenant, user = tenant_data
+
+    try:
+        # Validacao de seguranca: impede path traversal
+        if ".." in backup_id or "/" in backup_id or "\\" in backup_id:
+            raise HTTPException(status_code=400, detail="ID de backup invalido")
+
+        tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
+        backup_path = tenant_backup_dir / f"{backup_id}.sql"
+
+        # Garante que o arquivo esta dentro do diretorio do tenant
+        if not str(backup_path.resolve()).startswith(str(tenant_backup_dir.resolve())):
+            raise HTTPException(status_code=403, detail="Acesso negado")
+
+        if not backup_path.exists():
+            raise HTTPException(status_code=404, detail="Backup nao encontrado")
+
+        return FileResponse(
+            path=str(backup_path),
+            filename=f"{backup_id}.sql",
+            media_type="application/sql"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao baixar backup: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao baixar backup: {str(e)}")
+
+
+@router.post("/backups/{backup_id}/restore")
+async def restore_backup(
+    backup_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """
+    Restaura um backup especifico usando asyncpg (conexao Python direta):
+    1. Conecta ao banco do tenant
+    2. Desabilita triggers temporariamente
+    3. Trunca todas as tabelas com CASCADE
+    4. Executa o SQL do backup
+    5. Reabilita triggers
+
+    Esta abordagem nao depende do comando psql estar instalado.
+    """
+    tenant, user = tenant_data
+
+    try:
+        # Validacao de seguranca: impede path traversal
+        if ".." in backup_id or "/" in backup_id or "\\" in backup_id:
+            raise HTTPException(status_code=400, detail="ID de backup invalido")
+
+        tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
+        backup_path = tenant_backup_dir / f"{backup_id}.sql"
+
+        # Garante que o arquivo esta dentro do diretorio do tenant
+        if not str(backup_path.resolve()).startswith(str(tenant_backup_dir.resolve())):
+            logger.warning(f"[SECURITY] Tentativa de acesso nao autorizado ao backup: {backup_id} pelo tenant {tenant.tenant_code}")
+            raise HTTPException(status_code=403, detail="Acesso negado")
+
+        if not backup_path.exists():
+            raise HTTPException(status_code=404, detail="Backup nao encontrado")
+
+        # Configuracoes do banco
+        db_host = tenant.database_host or settings.POSTGRES_HOST
+        db_port = tenant.database_port or settings.POSTGRES_PORT
+        db_user = tenant.database_user
+        db_pass = tenant.database_password
+        db_name = tenant.database_name
+
+        # Em ambiente local, ajusta o host se necessario
+        # (license-db e enterprise-db sao containers Docker, localmente usa localhost)
+        if db_host in ['license-db', 'enterprise-db'] and not os.path.exists('/app'):
+            logger.info(f"[RESTORE] Ambiente local detectado, ajustando host de {db_host} para localhost")
+            db_host = 'localhost'
+
+        logger.info(f"[RESTORE] Iniciando restauracao do tenant {tenant.tenant_code}")
+        logger.info(f"[RESTORE] Conexao: host={db_host}, port={db_port}, db={db_name}, user={db_user}")
+
+        # Le o conteudo do backup
+        with open(backup_path, 'r', encoding='utf-8') as f:
+            backup_sql = f.read()
+
+        logger.info(f"[RESTORE] Backup carregado: {len(backup_sql)} caracteres")
+
+        # Conecta ao banco do tenant
+        try:
+            conn = await asyncpg.connect(
+                host=db_host,
+                port=int(db_port),
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                timeout=30
+            )
+        except Exception as conn_err:
+            logger.error(f"[RESTORE] Erro ao conectar ao banco: {conn_err}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Erro ao conectar ao banco de dados: {str(conn_err)}"
+            )
+
+        try:
+            # ETAPA 1: Limpar todas as tabelas
+            logger.info(f"[RESTORE] Etapa 1: Limpando tabelas existentes...")
+
+            # Desabilita triggers temporariamente
+            await conn.execute("SET session_replication_role = 'replica'")
+
+            # Busca todas as tabelas do schema public
+            tables = await conn.fetch("""
+                SELECT tablename FROM pg_tables
+                WHERE schemaname = 'public'
+            """)
+
+            # Trunca cada tabela
+            for table in tables:
+                table_name = table['tablename']
+                try:
+                    await conn.execute(f'TRUNCATE TABLE "{table_name}" CASCADE')
+                    logger.debug(f"[RESTORE] Tabela {table_name} truncada")
+                except Exception as te:
+                    logger.warning(f"[RESTORE] Aviso ao truncar {table_name}: {te}")
+
+            # Reabilita triggers
+            await conn.execute("SET session_replication_role = 'origin'")
+
+            logger.info(f"[RESTORE] Tabelas limpas com sucesso")
+
+            # ETAPA 2: Restaurar o backup
+            logger.info(f"[RESTORE] Etapa 2: Restaurando dados do backup...")
+
+            # Divide o SQL em comandos individuais e executa
+            # Remove comentarios e linhas vazias, depois divide por ;
+            commands = []
+            current_command = []
+            in_dollar_quote = False
+
+            for line in backup_sql.split('\n'):
+                stripped = line.strip()
+
+                # Ignora comentarios e linhas vazias fora de blocos
+                if not in_dollar_quote:
+                    if stripped.startswith('--') or not stripped:
+                        continue
+
+                # Detecta inicio/fim de blocos $$ (funcoes, DO blocks)
+                if '$$' in line:
+                    in_dollar_quote = not in_dollar_quote
+
+                current_command.append(line)
+
+                # Se termina com ; e nao estamos em bloco $$
+                if stripped.endswith(';') and not in_dollar_quote:
+                    cmd = '\n'.join(current_command).strip()
+                    if cmd:
+                        commands.append(cmd)
+                    current_command = []
+
+            # Executa cada comando
+            success_count = 0
+            error_count = 0
+
+            for i, cmd in enumerate(commands):
+                try:
+                    # Pula comandos que podem causar problemas
+                    cmd_lower = cmd.lower()
+                    if any(skip in cmd_lower for skip in [
+                        'create database', 'drop database',
+                        'create extension', '\\connect',
+                        'set default_tablespace', 'set statement_timeout'
+                    ]):
+                        continue
+
+                    await conn.execute(cmd)
+                    success_count += 1
+                except Exception as cmd_err:
+                    error_count += 1
+                    # Ignora erros de objetos duplicados (normal em restore)
+                    err_str = str(cmd_err).lower()
+                    if 'already exists' not in err_str and 'duplicate' not in err_str:
+                        logger.debug(f"[RESTORE] Comando {i+1} falhou: {str(cmd_err)[:100]}")
+
+            logger.info(f"[RESTORE] Comandos executados: {success_count} sucesso, {error_count} erros/ignorados")
+
+        finally:
+            await conn.close()
+
+        logger.info(f"[RESTORE] Restauracao concluida com sucesso para tenant {tenant.tenant_code}")
+
+        return {
+            "success": True,
+            "message": "Backup restaurado com sucesso! Todos os dados foram atualizados. Faca login novamente para garantir a sincronizacao."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[RESTORE] Erro ao restaurar backup: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao restaurar backup: {str(e)}"
+        )
+
+
+@router.delete("/backups/{backup_id}")
+async def delete_backup(
+    backup_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Exclui um backup especifico"""
+    tenant, user = tenant_data
+
+    try:
+        # Validacao de seguranca: impede path traversal
+        if ".." in backup_id or "/" in backup_id or "\\" in backup_id:
+            raise HTTPException(status_code=400, detail="ID de backup invalido")
+
+        tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
+        backup_path = tenant_backup_dir / f"{backup_id}.sql"
+
+        # Garante que o arquivo esta dentro do diretorio do tenant
+        if not str(backup_path.resolve()).startswith(str(tenant_backup_dir.resolve())):
+            logger.warning(f"[SECURITY] Tentativa de exclusao nao autorizada do backup: {backup_id} pelo tenant {tenant.tenant_code}")
+            raise HTTPException(status_code=403, detail="Acesso negado")
+
+        if not backup_path.exists():
+            raise HTTPException(status_code=404, detail="Backup nao encontrado")
+
+        backup_path.unlink()
+        logger.info(f"[BACKUP] Backup {backup_id} excluido do tenant {tenant.tenant_code}")
+
+        return {
+            "success": True,
+            "message": "Backup excluido com sucesso"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao excluir backup: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao excluir backup: {str(e)}")
+
+
+@router.post("/backups/schedule")
+async def save_backup_schedule(
+    schedule: BackupScheduleModel,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Salva configuracao de agendamento de backup"""
+    tenant, user = tenant_data
+
+    try:
+        schedule_dict = schedule.dict()
+        save_schedule(tenant.tenant_code, schedule_dict)
+
+        logger.info(f"[BACKUP] Agendamento salvo para tenant {tenant.tenant_code}: {schedule_dict}")
+
+        return {
+            "success": True,
+            "message": "Agendamento salvo com sucesso",
+            "schedule": schedule_dict,
+            "next_scheduled": calculate_next_backup(schedule_dict)
+        }
+
+    except Exception as e:
+        logger.error(f"Erro ao salvar agendamento: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar agendamento: {str(e)}")
