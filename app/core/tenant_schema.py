@@ -338,13 +338,14 @@ CREATE TABLE IF NOT EXISTS employees (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Dados pessoais
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    name VARCHAR(200),  -- Campo auxiliar para nome completo (usado em JOINs)
+    email VARCHAR(255),
     phone VARCHAR(20),
     mobile VARCHAR(20),
     -- Documentos
-    cpf VARCHAR(14) UNIQUE,
+    cpf VARCHAR(14),
     rg VARCHAR(20),
     birth_date DATE,
     -- Endereço
