@@ -689,7 +689,7 @@ export { default as Card, CardHeader, CardContent } from './Card';
 export { default as Input } from './Input';
 export { default as Select } from './Select';
 export { default as Modal } from './Modal';
-export { default as Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from './Table';
+export { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from './Table';
 export { default as LoadingSpinner, FullPageLoader } from './LoadingSpinner';
 export { default as Icon3DButton } from './Icon3DButton';
 

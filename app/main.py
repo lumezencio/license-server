@@ -9,6 +9,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
+import asyncio
+import threading
 
 from app.core import settings
 from app.database import init_db
@@ -43,10 +45,25 @@ async def lifespan(app: FastAPI):
     await init_db()
     print("Database initialized")
 
+    # Inicia o scheduler de backups em background
+    backup_scheduler_task = None
+    try:
+        from app.core.backup_scheduler import run_scheduler
+        backup_scheduler_task = asyncio.create_task(run_scheduler())
+        print("[BACKUP-SCHEDULER] Backup scheduler iniciado em background")
+    except Exception as e:
+        print(f"[BACKUP-SCHEDULER] Aviso: Nao foi possivel iniciar o scheduler: {e}")
+
     yield
 
     # Shutdown
     print("Shutting down...")
+    if backup_scheduler_task:
+        backup_scheduler_task.cancel()
+        try:
+            await backup_scheduler_task
+        except asyncio.CancelledError:
+            print("[BACKUP-SCHEDULER] Scheduler encerrado")
 
 
 # Middleware de headers de seguranca
