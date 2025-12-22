@@ -381,26 +381,59 @@ CREATE TABLE IF NOT EXISTS sales (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Identificação
     sale_number VARCHAR(20) UNIQUE NOT NULL,
-    sale_date DATE NOT NULL,
+    sale_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Relacionamentos
     customer_id VARCHAR(36) REFERENCES customers(id),
     seller_id VARCHAR(36) REFERENCES employees(id),
+    company_id VARCHAR(36),
+    -- Tipo de venda
+    sale_type VARCHAR(20) DEFAULT 'SALE',
     -- Valores
     subtotal DECIMAL(15,2) DEFAULT 0,
     discount_amount DECIMAL(15,2) DEFAULT 0,
     discount_percent DECIMAL(5,2) DEFAULT 0,
+    shipping_amount DECIMAL(15,2) DEFAULT 0,
+    -- Impostos
+    icms_amount DECIMAL(15,2) DEFAULT 0,
+    pis_amount DECIMAL(15,2) DEFAULT 0,
+    cofins_amount DECIMAL(15,2) DEFAULT 0,
+    iss_amount DECIMAL(15,2) DEFAULT 0,
     total_amount DECIMAL(15,2) DEFAULT 0,
     -- Pagamento
-    payment_method VARCHAR(50),
-    payment_status VARCHAR(20) DEFAULT 'pending',
+    payment_method VARCHAR(50) DEFAULT 'CASH',
+    payment_status VARCHAR(30) DEFAULT 'pending',
     installments INTEGER DEFAULT 1,
     -- Status
-    sale_status VARCHAR(20) DEFAULT 'completed',
+    sale_status VARCHAR(30) DEFAULT 'completed',
+    -- Datas de controle
+    confirmed_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    cancelled_at TIMESTAMP,
+    cancelled_by VARCHAR(36),
+    cancellation_reason TEXT,
+    -- Reembolso
+    is_refunded BOOLEAN DEFAULT FALSE,
+    refunded_at TIMESTAMP,
+    refunded_by VARCHAR(36),
+    refund_reason TEXT,
+    -- Controle de estoque
+    is_stock_updated BOOLEAN DEFAULT FALSE,
+    stock_updated_at TIMESTAMP,
     -- Observações
     notes TEXT,
+    internal_notes TEXT,
+    -- Versionamento
+    version INTEGER DEFAULT 1,
+    created_by VARCHAR(36),
+    updated_by VARCHAR(36),
+    deleted_at TIMESTAMP,
     -- Metadados
     sale_metadata JSONB
 );
+
+CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
+CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sale_date);
+CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(sale_status);
 
 -- =====================================================
 -- ITENS DE VENDA (SALE_ITEMS)
@@ -413,13 +446,38 @@ CREATE TABLE IF NOT EXISTS sale_items (
     sale_id VARCHAR(36) NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
     product_id VARCHAR(36) REFERENCES products(id),
     -- Dados do item
-    product_name VARCHAR(200) NOT NULL,
-    quantity DECIMAL(15,3) DEFAULT 1,
+    product_code VARCHAR(100),
+    product_name VARCHAR(500) NOT NULL,
+    product_description TEXT,
+    quantity DECIMAL(15,4) DEFAULT 1,
+    unit VARCHAR(20) DEFAULT 'UN',
     unit_price DECIMAL(15,2) DEFAULT 0,
     discount_amount DECIMAL(15,2) DEFAULT 0,
     discount_percent DECIMAL(5,2) DEFAULT 0,
-    total_amount DECIMAL(15,2) DEFAULT 0
+    subtotal DECIMAL(15,2) DEFAULT 0,
+    total_amount DECIMAL(15,2) DEFAULT 0,
+    -- Impostos
+    icms_rate DECIMAL(5,2) DEFAULT 0,
+    icms_amount DECIMAL(15,2) DEFAULT 0,
+    pis_rate DECIMAL(5,2) DEFAULT 0,
+    pis_amount DECIMAL(15,2) DEFAULT 0,
+    cofins_rate DECIMAL(5,2) DEFAULT 0,
+    cofins_amount DECIMAL(15,2) DEFAULT 0,
+    -- Dados fiscais
+    ncm_code VARCHAR(20),
+    cfop VARCHAR(20),
+    cst_icms VARCHAR(10),
+    cst_pis VARCHAR(10),
+    cst_cofins VARCHAR(10),
+    -- Controle de estoque
+    stock_reserved BOOLEAN DEFAULT FALSE,
+    stock_deducted BOOLEAN DEFAULT FALSE,
+    stock_deducted_at TIMESTAMP,
+    item_order INTEGER DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_sale_item_sale ON sale_items(sale_id);
+CREATE INDEX IF NOT EXISTS idx_sale_item_product ON sale_items(product_id);
 
 -- =====================================================
 -- TABELA DE ORÇAMENTOS (QUOTATIONS)

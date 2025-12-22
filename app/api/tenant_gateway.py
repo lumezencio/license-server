@@ -1656,24 +1656,38 @@ async def create_sale(
         else:
             sale_metadata = None
 
-        # Insere a venda
+        # Calcula valores de impostos (se fornecidos)
+        shipping_amount = to_decimal(data.get("shipping_amount")) or 0
+        icms_amount = to_decimal(data.get("icms_amount")) or 0
+        pis_amount = to_decimal(data.get("pis_amount")) or 0
+        cofins_amount = to_decimal(data.get("cofins_amount")) or 0
+        iss_amount = to_decimal(data.get("iss_amount")) or 0
+
+        # Insere a venda com todos os campos NOT NULL
         await conn.execute("""
             INSERT INTO sales (
                 id, sale_number, sale_date, customer_id, seller_id,
-                subtotal, discount_amount, discount_percent, total_amount,
-                payment_method, payment_status, installments,
-                sale_status, notes, sale_metadata, created_at, updated_at
+                sale_type, subtotal, discount_amount, discount_percent,
+                shipping_amount, icms_amount, pis_amount, cofins_amount, iss_amount,
+                total_amount, payment_method, payment_status, installments,
+                sale_status, is_refunded, is_stock_updated, version,
+                notes, sale_metadata, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
             )
         """,
             sale_id, sale_number, sale_date,
             to_str(data.get("customer_id")), to_str(data.get("seller_id")),
-            subtotal, discount_amount, discount_percent, total_amount,
-            to_str(data.get("payment_method")), to_str(data.get("payment_status")) or "pending",
+            to_str(data.get("sale_type")) or "SALE",
+            subtotal, discount_amount, discount_percent,
+            shipping_amount, icms_amount, pis_amount, cofins_amount, iss_amount,
+            total_amount,
+            to_str(data.get("payment_method")) or "CASH",
+            to_str(data.get("payment_status")) or "pending",
             to_int(data.get("installments")) or 1,
-            to_str(data.get("sale_status")) or "completed", to_str(data.get("notes")),
-            sale_metadata, now, now
+            to_str(data.get("sale_status")) or "completed",
+            False, False, 1,  # is_refunded, is_stock_updated, version
+            to_str(data.get("notes")), sale_metadata, now, now
         )
 
         # Insere itens da venda e atualiza estoque
@@ -1699,19 +1713,32 @@ async def create_sale(
                 if prod_row:
                     product_name = prod_row["name"]
 
+            # Calcula subtotal (quantidade * preço unitário, antes de descontos)
+            item_subtotal = quantity * unit_price
+            item_discount_percent = to_decimal(item.get("discount_percent")) or 0
+
             await conn.execute("""
                 INSERT INTO sale_items (
                     id, sale_id, product_id, product_name,
-                    quantity, unit_price, discount_amount, discount_percent, total_amount,
+                    quantity, unit, unit_price,
+                    discount_amount, discount_percent,
+                    subtotal, total_amount,
+                    icms_rate, icms_amount, pis_rate, pis_amount, cofins_rate, cofins_amount,
+                    stock_reserved, stock_deducted, item_order,
                     created_at, updated_at
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                 )
             """,
                 item_id, sale_id, product_id,
                 product_name or "Produto",
-                quantity, unit_price,
-                item_discount, to_decimal(item.get("discount_percent")) or 0, item_total,
+                quantity, to_str(item.get("unit")) or "UN", unit_price,
+                item_discount, item_discount_percent,
+                item_subtotal, item_total,
+                to_decimal(item.get("icms_rate")) or 0, to_decimal(item.get("icms_amount")) or 0,
+                to_decimal(item.get("pis_rate")) or 0, to_decimal(item.get("pis_amount")) or 0,
+                to_decimal(item.get("cofins_rate")) or 0, to_decimal(item.get("cofins_amount")) or 0,
+                False, False, 0,
                 now, now
             )
 
