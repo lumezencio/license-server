@@ -2120,6 +2120,107 @@ async def create_quotation(
         await conn.close()
 
 
+@router.put("/quotations/{quotation_id}")
+async def update_quotation(
+    quotation_id: str,
+    request: Request,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza um orçamento (status, notas, etc.)"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        data = await request.json()
+        now = datetime.utcnow()
+
+        # Verifica se orçamento existe
+        existing = await conn.fetchrow("SELECT id FROM quotations WHERE id = $1", quotation_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+
+        # Atualiza campos permitidos
+        updates = []
+        params = []
+        param_idx = 1
+
+        if "quotation_status" in data:
+            updates.append(f"quotation_status = ${param_idx}")
+            params.append(data["quotation_status"])
+            param_idx += 1
+
+        if "notes" in data:
+            updates.append(f"notes = ${param_idx}")
+            params.append(data["notes"])
+            param_idx += 1
+
+        if "internal_notes" in data:
+            updates.append(f"internal_notes = ${param_idx}")
+            params.append(data["internal_notes"])
+            param_idx += 1
+
+        if updates:
+            updates.append(f"updated_at = ${param_idx}")
+            params.append(now)
+            param_idx += 1
+
+            params.append(quotation_id)
+            await conn.execute(f"""
+                UPDATE quotations SET {', '.join(updates)} WHERE id = ${param_idx}
+            """, *params)
+
+        return {"message": "Orçamento atualizado com sucesso", "id": quotation_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao atualizar orçamento: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar orçamento: {str(e)}")
+    finally:
+        await conn.close()
+
+
+@router.delete("/quotations/{quotation_id}")
+async def delete_quotation(
+    quotation_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Exclui um orçamento e seus itens"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Verifica se orçamento existe
+        existing = await conn.fetchrow("""
+            SELECT id, quotation_number, converted_to_sale FROM quotations WHERE id = $1
+        """, quotation_id)
+
+        if not existing:
+            raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+
+        if existing["converted_to_sale"]:
+            raise HTTPException(status_code=400, detail="Não é possível excluir orçamento já convertido em venda")
+
+        # Exclui itens primeiro (por causa da FK)
+        await conn.execute("DELETE FROM quotation_items WHERE quotation_id = $1", quotation_id)
+
+        # Exclui orçamento
+        await conn.execute("DELETE FROM quotations WHERE id = $1", quotation_id)
+
+        return {
+            "message": f"Orçamento {existing['quotation_number']} excluído com sucesso",
+            "id": quotation_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao excluir orçamento: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao excluir orçamento: {str(e)}")
+    finally:
+        await conn.close()
+
+
 @router.post("/quotations/{quotation_id}/convert-to-sale")
 async def convert_quotation_to_sale(
     quotation_id: str,
