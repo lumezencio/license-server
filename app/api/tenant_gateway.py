@@ -2164,23 +2164,29 @@ async def convert_quotation_to_sale(
         next_num = count_row["next_num"] if count_row else 1
         sale_number = f"VND{next_num:06d}"
 
-        # Cria a venda baseada no orçamento
+        # Cria a venda baseada no orçamento (com todos os campos NOT NULL)
         await conn.execute("""
             INSERT INTO sales (
                 id, sale_number, sale_date, customer_id, seller_id,
-                subtotal, discount_amount, discount_percent, total_amount,
-                payment_method, payment_status, installments,
-                sale_status, notes, created_at, updated_at
+                sale_type, subtotal, discount_amount, discount_percent,
+                shipping_amount, icms_amount, pis_amount, cofins_amount, iss_amount,
+                total_amount, payment_method, payment_status, installments,
+                sale_status, is_refunded, is_stock_updated, version,
+                notes, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
             )
         """,
             sale_id, sale_number, now.date(),
             quotation["customer_id"], quotation["seller_id"],
-            quotation["subtotal"], quotation["discount_amount"],
-            quotation["discount_percent"], quotation["total_amount"],
-            quotation["payment_method"], "pending",
-            quotation["installments"], "completed",
+            "SALE",
+            quotation["subtotal"] or 0, quotation["discount_amount"] or 0,
+            quotation["discount_percent"] or 0, quotation.get("freight_amount") or 0,
+            0, 0, 0, 0,  # icms, pis, cofins, iss
+            quotation["total_amount"] or 0,
+            quotation["payment_method"] or "CASH", "pending",
+            quotation["installments"] or 1, "completed",
+            False, False, 1,
             f"Convertido do orçamento {quotation['quotation_number']}",
             now, now
         )
@@ -2189,16 +2195,31 @@ async def convert_quotation_to_sale(
         update_stock = data.get("update_stock", True)
         for item in items_rows:
             item_id = str(uuid.uuid4())
+            quantity = item["quantity"] or 1
+            unit_price = item["unit_price"] or 0
+            item_subtotal = float(quantity) * float(unit_price)
+            item_discount = item["discount_amount"] or 0
+            item_total = item["total_amount"] or (item_subtotal - float(item_discount))
+
             await conn.execute("""
                 INSERT INTO sale_items (
                     id, sale_id, product_id, product_name,
-                    quantity, unit_price, discount_amount, discount_percent, total_amount,
+                    quantity, unit, unit_price,
+                    discount_amount, discount_percent,
+                    subtotal, total_amount,
+                    icms_rate, icms_amount, pis_rate, pis_amount, cofins_rate, cofins_amount,
+                    stock_reserved, stock_deducted, item_order,
                     created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+                )
             """,
                 item_id, sale_id, item["product_id"], item["product_name"],
-                item["quantity"], item["unit_price"],
-                item["discount_amount"], item["discount_percent"], item["total_amount"],
+                quantity, item.get("unit_of_measure") or "UN", unit_price,
+                item_discount, item["discount_percent"] or 0,
+                item_subtotal, item_total,
+                0, 0, 0, 0, 0, 0,  # taxas de impostos
+                False, False, 0,
                 now, now
             )
 
@@ -2210,7 +2231,7 @@ async def convert_quotation_to_sale(
                         available_stock = COALESCE(available_stock, 0) - $1,
                         updated_at = $2
                     WHERE id = $3 AND stock_control = true
-                """, item["quantity"], now, item["product_id"])
+                """, quantity, now, item["product_id"])
 
         # Atualiza orçamento como convertido
         await conn.execute("""
