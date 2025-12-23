@@ -1594,13 +1594,14 @@ async def list_sales(
         await ensure_sales_and_quotations_schema(conn)
 
         # Schema legado: customers usa first_name/last_name
+        # CAST para VARCHAR para compatibilidade com tenant legado (UUID vs VARCHAR)
         rows = await conn.fetch("""
             SELECT s.*,
                 COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                 COALESCE(e.first_name || ' ' || e.last_name, e.name) as seller_name
             FROM sales s
-            LEFT JOIN customers c ON s.customer_id = c.id
-            LEFT JOIN employees e ON s.seller_id = e.id
+            LEFT JOIN customers c ON s.customer_id::text = c.id::text
+            LEFT JOIN employees e ON s.seller_id::text = e.id::text
             ORDER BY s.sale_date DESC
             LIMIT $1 OFFSET $2
         """, limit, skip)
@@ -1614,6 +1615,7 @@ async def list_sales(
             print(f"  -> Venda {sale.get('sale_number')}: buscando items...")
 
             # Busca itens da venda
+            # CAST para VARCHAR para compatibilidade com tenant legado
             items_rows = await conn.fetch("""
                 SELECT si.*,
                     p.name as product_name_full,
@@ -1621,8 +1623,8 @@ async def list_sales(
                     p.barcode_ean as product_barcode,
                     p.sale_price as product_sale_price
                 FROM sale_items si
-                LEFT JOIN products p ON si.product_id = p.id
-                WHERE si.sale_id = $1
+                LEFT JOIN products p ON si.product_id::text = p.id::text
+                WHERE si.sale_id::text = $1::text
                 ORDER BY si.created_at
             """, sale_id)
 
