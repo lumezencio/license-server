@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT TRUE NOT NULL,
     is_verified BOOLEAN DEFAULT FALSE NOT NULL,
     -- 2FA
-    two_factor_enabled BOOLEAN DEFAULT FALSE,
+    two_factor_enabled BOOLEAN DEFAULT FALSE NOT NULL,
     two_factor_secret VARCHAR(255),
     backup_codes JSONB,
     -- Tokens
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS users (
     refresh_token TEXT,
     refresh_token_expires_at TIMESTAMP,
     -- Login tracking
-    failed_login_attempts INTEGER DEFAULT 0,
+    failed_login_attempts INTEGER DEFAULT 0 NOT NULL,
     locked_until TIMESTAMP,
     last_login_at TIMESTAMP,
     last_login_ip VARCHAR(50),
@@ -116,8 +116,8 @@ CREATE TABLE IF NOT EXISTS customers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Dados pessoais
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
     email VARCHAR(200),
     phone VARCHAR(20),
     mobile VARCHAR(20),
@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS products (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Identificação básica
     name VARCHAR(200) NOT NULL,
-    slug VARCHAR(200) NOT NULL,
+    slug VARCHAR(200),
     code VARCHAR(50),
     barcode_ean VARCHAR(50),
     barcode_ean128 VARCHAR(50),
