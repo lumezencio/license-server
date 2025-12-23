@@ -37,6 +37,13 @@ router = APIRouter(prefix="/gateway", tags=["Tenant Gateway"])
 security = HTTPBearer()
 
 
+# === ENDPOINT DE TESTE DEBUG ===
+@router.get("/test-cors")
+async def test_cors():
+    """Endpoint para testar CORS - não requer autenticação"""
+    return {"status": "CORS funcionando!", "timestamp": datetime.now().isoformat()}
+
+
 # === MODELOS ===
 
 class CustomerModel(BaseModel):
@@ -271,7 +278,9 @@ async def get_tenant_from_token(
     """
     Extrai e valida token JWT, retorna tenant e dados do usuario.
     """
+    print("🔐 get_tenant_from_token INICIADO")
     token = credentials.credentials
+    print(f"   Token recebido: {token[:50]}...")
 
     try:
         payload = jwt.decode(
@@ -279,12 +288,15 @@ async def get_tenant_from_token(
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM]
         )
+        print(f"✅ Token decodificado com sucesso")
     except jwt.ExpiredSignatureError:
+        print("❌ Token expirado!")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expirado"
         )
     except jwt.InvalidTokenError as e:
+        print(f"❌ Token inválido: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token invalido: {str(e)}"
@@ -1572,22 +1584,46 @@ async def list_sales(
     limit: int = 100,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Lista vendas do tenant"""
+    """Lista vendas do tenant com seus itens (igual ao GET /quotations)"""
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
     try:
+        # Garante que as tabelas existem
+        await ensure_sales_and_quotations_schema(conn)
+
         # Schema legado: customers usa first_name/last_name
         rows = await conn.fetch("""
             SELECT s.*,
-                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name
+                COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
+                COALESCE(e.first_name || ' ' || e.last_name, e.name) as seller_name
             FROM sales s
             LEFT JOIN customers c ON s.customer_id = c.id
+            LEFT JOIN employees e ON s.seller_id = e.id
             ORDER BY s.sale_date DESC
             LIMIT $1 OFFSET $2
         """, limit, skip)
 
-        return [row_to_dict(row) for row in rows]
+        # Converte para lista e adiciona itens de cada venda
+        sales = []
+        for row in rows:
+            sale = row_to_dict(row)
+            # Busca itens da venda
+            items_rows = await conn.fetch("""
+                SELECT si.*,
+                    p.name as product_name_full,
+                    p.code as product_code,
+                    p.barcode_ean as product_barcode,
+                    p.sale_price as product_sale_price
+                FROM sale_items si
+                LEFT JOIN products p ON si.product_id = p.id
+                WHERE si.sale_id = $1
+                ORDER BY si.created_at
+            """, sale["id"])
+            sale["items"] = [row_to_dict(item) for item in items_rows]
+            sales.append(sale)
+
+        return sales
     finally:
         await conn.close()
 
@@ -1598,8 +1634,20 @@ async def get_sale(
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Retorna detalhes de uma venda específica com itens"""
-    tenant, user = tenant_data
-    conn = await get_tenant_connection(tenant)
+    try:
+        print(f"🔍 [GET /sales/{sale_id}] Requisição recebida")
+        print(f"   Sale ID: {sale_id}")
+
+        tenant, user = tenant_data
+        print(f"   Tenant: {tenant}")
+        print(f"   User: {user.get('email', 'N/A')}")
+
+        conn = await get_tenant_connection(tenant)
+    except Exception as e:
+        print(f"❌ ERRO CRÍTICO no início de get_sale: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao processar venda: {str(e)}")
 
     try:
         # Busca a venda
@@ -1633,6 +1681,7 @@ async def get_sale(
 
         sale["items"] = [row_to_dict(item) for item in items_rows]
 
+        print(f"✅ [GET /sales/{sale_id}] Venda encontrada com {len(sale['items'])} itens")
         return sale
     finally:
         await conn.close()
