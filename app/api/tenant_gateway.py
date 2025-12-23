@@ -288,15 +288,15 @@ async def get_tenant_from_token(
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM]
         )
-        print(f"✅ Token decodificado com sucesso")
+        print(f"[OK] Token decodificado com sucesso")
     except jwt.ExpiredSignatureError:
-        print("❌ Token expirado!")
+        print("[ERROR] Token expirado!")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expirado"
         )
     except jwt.InvalidTokenError as e:
-        print(f"❌ Token inválido: {str(e)}")
+        print(f"[ERROR] Token inválido: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token invalido: {str(e)}"
@@ -1585,6 +1585,7 @@ async def list_sales(
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Lista vendas do tenant com seus itens (igual ao GET /quotations)"""
+    print("🔥🔥🔥 [GET /sales] VERSÃO CORRIGIDA EXECUTANDO! 🔥🔥🔥")
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
@@ -1605,9 +1606,13 @@ async def list_sales(
         """, limit, skip)
 
         # Converte para lista e adiciona itens de cada venda
+        print(f"📦 Encontradas {len(rows)} vendas no banco")
         sales = []
         for row in rows:
             sale = row_to_dict(row)
+            sale_id = sale["id"]
+            print(f"  -> Venda {sale.get('sale_number')}: buscando items...")
+
             # Busca itens da venda
             items_rows = await conn.fetch("""
                 SELECT si.*,
@@ -1619,10 +1624,13 @@ async def list_sales(
                 LEFT JOIN products p ON si.product_id = p.id
                 WHERE si.sale_id = $1
                 ORDER BY si.created_at
-            """, sale["id"])
+            """, sale_id)
+
             sale["items"] = [row_to_dict(item) for item in items_rows]
+            print(f"    [OK] {len(sale['items'])} items adicionados!")
             sales.append(sale)
 
+        print(f"[OK] Retornando {len(sales)} vendas COM items inclusos")
         return sales
     finally:
         await conn.close()
@@ -1644,7 +1652,7 @@ async def get_sale(
 
         conn = await get_tenant_connection(tenant)
     except Exception as e:
-        print(f"❌ ERRO CRÍTICO no início de get_sale: {str(e)}")
+        print(f"[ERROR] ERRO CRÍTICO no início de get_sale: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao processar venda: {str(e)}")
@@ -1681,7 +1689,7 @@ async def get_sale(
 
         sale["items"] = [row_to_dict(item) for item in items_rows]
 
-        print(f"✅ [GET /sales/{sale_id}] Venda encontrada com {len(sale['items'])} itens")
+        print(f"[OK] [GET /sales/{sale_id}] Venda encontrada com {len(sale['items'])} itens")
         return sale
     finally:
         await conn.close()
@@ -7989,3 +7997,4 @@ async def save_backup_schedule(
     except Exception as e:
         logger.error(f"Erro ao salvar agendamento: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao salvar agendamento: {str(e)}")
+
