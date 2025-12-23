@@ -278,7 +278,7 @@ async def get_tenant_from_token(
     """
     Extrai e valida token JWT, retorna tenant e dados do usuario.
     """
-    print("🔐 get_tenant_from_token INICIADO")
+    print("[AUTH] get_tenant_from_token INICIADO")
     token = credentials.credentials
     print(f"   Token recebido: {token[:50]}...")
 
@@ -1585,7 +1585,7 @@ async def list_sales(
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
     """Lista vendas do tenant com seus itens (igual ao GET /quotations)"""
-    print("🔥🔥🔥 [GET /sales] VERSÃO CORRIGIDA EXECUTANDO! 🔥🔥🔥")
+    print("*** [GET /sales] VERSAO CORRIGIDA EXECUTANDO! ***")
     tenant, user = tenant_data
     conn = await get_tenant_connection(tenant)
 
@@ -1606,7 +1606,7 @@ async def list_sales(
         """, limit, skip)
 
         # Converte para lista e adiciona itens de cada venda
-        print(f"📦 Encontradas {len(rows)} vendas no banco")
+        print(f"[DATA] Encontradas {len(rows)} vendas no banco")
         sales = []
         for row in rows:
             sale = row_to_dict(row)
@@ -1643,7 +1643,7 @@ async def get_sale(
 ):
     """Retorna detalhes de uma venda específica com itens"""
     try:
-        print(f"🔍 [GET /sales/{sale_id}] Requisição recebida")
+        print(f"[DEBUG] [GET /sales/{sale_id}] Requisicao recebida")
         print(f"   Sale ID: {sale_id}")
 
         tenant, user = tenant_data
