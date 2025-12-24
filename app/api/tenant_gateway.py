@@ -8336,6 +8336,126 @@ async def upload_certificate(
 # NF-e EMISSIONS
 # =====================================================
 
+async def ensure_nfe_tables(conn):
+    """Garante que as tabelas de NF-e existam no banco do tenant"""
+    try:
+        # Verificar se tabela nfe_emissions existe
+        exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'nfe_emissions')"
+        )
+        if exists:
+            return True
+
+        # Criar ENUM nfestatus
+        await conn.execute("""
+            DO $$ BEGIN
+                CREATE TYPE nfestatus AS ENUM (
+                    'PENDING', 'AUTHORIZED', 'REJECTED',
+                    'CANCELLED', 'INUTILIZED', 'CONTINGENCY', 'ERROR'
+                );
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """)
+
+        # Criar tabela fiscal_settings
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS fiscal_settings (
+                id VARCHAR(36) PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                certificate_file BYTEA,
+                certificate_password_encrypted VARCHAR(500),
+                certificate_expires_at TIMESTAMP,
+                certificate_serial VARCHAR(100),
+                certificate_issuer VARCHAR(300),
+                certificate_subject VARCHAR(300),
+                ambiente INTEGER DEFAULT 2,
+                uf VARCHAR(2) NOT NULL DEFAULT 'SP',
+                codigo_municipio VARCHAR(10),
+                serie_nfe INTEGER DEFAULT 1,
+                ultimo_numero_nfe INTEGER DEFAULT 0,
+                serie_nfce INTEGER DEFAULT 1,
+                ultimo_numero_nfce INTEGER DEFAULT 0,
+                csc_id VARCHAR(10),
+                csc_token VARCHAR(50),
+                regime_tributario INTEGER DEFAULT 1,
+                cnae_principal VARCHAR(10),
+                inscricao_municipal VARCHAR(20),
+                logo_danfe BYTEA,
+                mensagem_contribuinte TEXT,
+                email_remetente VARCHAR(255),
+                email_copia VARCHAR(500),
+                justificativa_contingencia TEXT,
+                data_contingencia TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE,
+                is_configured BOOLEAN DEFAULT FALSE
+            )
+        """)
+
+        # Criar tabela nfe_emissions
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS nfe_emissions (
+                id VARCHAR(36) PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                sale_id VARCHAR(36),
+                modelo INTEGER DEFAULT 55,
+                chave_acesso VARCHAR(44) UNIQUE,
+                numero_nfe INTEGER NOT NULL,
+                serie INTEGER NOT NULL,
+                status nfestatus DEFAULT 'PENDING',
+                protocolo_autorizacao VARCHAR(20),
+                data_autorizacao TIMESTAMP,
+                digest_value VARCHAR(100),
+                ambiente INTEGER DEFAULT 2,
+                tipo_emissao INTEGER DEFAULT 1,
+                xml_nfe TEXT,
+                xml_protocolo TEXT,
+                xml_evento TEXT,
+                danfe_pdf TEXT,
+                valor_total DECIMAL(15,2) DEFAULT 0,
+                valor_produtos DECIMAL(15,2) DEFAULT 0,
+                valor_desconto DECIMAL(15,2) DEFAULT 0,
+                valor_frete DECIMAL(15,2) DEFAULT 0,
+                valor_icms DECIMAL(15,2) DEFAULT 0,
+                valor_pis DECIMAL(15,2) DEFAULT 0,
+                valor_cofins DECIMAL(15,2) DEFAULT 0,
+                valor_ipi DECIMAL(15,2) DEFAULT 0,
+                codigo_retorno VARCHAR(10),
+                motivo_retorno TEXT,
+                cancelled_at TIMESTAMP,
+                motivo_cancelamento TEXT,
+                protocolo_cancelamento VARCHAR(20),
+                xml_cancelamento TEXT,
+                ultima_carta_correcao TEXT,
+                total_cartas_correcao INTEGER DEFAULT 0,
+                inutilized_at TIMESTAMP,
+                justificativa_inutilizacao TEXT,
+                protocolo_inutilizacao VARCHAR(20),
+                tentativas_envio INTEGER DEFAULT 0,
+                ultimo_erro TEXT,
+                email_enviado BOOLEAN DEFAULT FALSE,
+                email_enviado_at TIMESTAMP,
+                email_destinatario VARCHAR(255),
+                nfe_metadata JSONB
+            )
+        """)
+
+        # Criar indices
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_nfe_emissions_sale ON nfe_emissions(sale_id)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_nfe_emissions_chave ON nfe_emissions(chave_acesso)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_nfe_emissions_numero ON nfe_emissions(numero_nfe, serie)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_nfe_emissions_status ON nfe_emissions(status)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_nfe_emissions_data ON nfe_emissions(created_at)')
+
+        logger.info("Tabelas de NF-e criadas com sucesso")
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao criar tabelas NF-e: {e}")
+        return False
+
+
 @router.get("/nfe")
 async def list_nfe(
     page: int = Query(1, ge=1),
@@ -8355,6 +8475,9 @@ async def list_nfe(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garantir que tabelas NF-e existam
+            await ensure_nfe_tables(conn)
+
             # Monta query com filtros
             where_clauses = []
             params = []
@@ -8386,23 +8509,37 @@ async def list_nfe(
             count_query = f"SELECT COUNT(*) FROM nfe_emissions WHERE {where_sql}"
             total = await conn.fetchval(count_query, *params)
 
-            # Busca registros
+            # Busca registros com JOIN para dados do cliente
             offset = (page - 1) * page_size
             query = f"""
                 SELECT
-                    id, sale_id, modelo, chave_acesso, numero_nfe, serie,
-                    status, protocolo_autorizacao, data_autorizacao, ambiente,
-                    valor_total, valor_produtos, codigo_retorno, motivo_retorno,
-                    cancelled_at, email_enviado, created_at, updated_at
-                FROM nfe_emissions
-                WHERE {where_sql}
-                ORDER BY created_at DESC
+                    n.id, n.sale_id, n.modelo, n.chave_acesso, n.numero_nfe, n.serie,
+                    n.status, n.protocolo_autorizacao, n.data_autorizacao, n.ambiente,
+                    n.valor_total, n.valor_produtos, n.codigo_retorno, n.motivo_retorno,
+                    n.cancelled_at, n.motivo_cancelamento, n.email_enviado, n.created_at, n.updated_at,
+                    s.sale_number, c.first_name, c.last_name, c.company_name
+                FROM nfe_emissions n
+                LEFT JOIN sales s ON n.sale_id = s.id
+                LEFT JOIN customers c ON s.customer_id = CAST(c.id AS TEXT)
+                WHERE {where_sql.replace('status', 'n.status').replace('sale_id', 'n.sale_id').replace('created_at', 'n.created_at')}
+                ORDER BY n.created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """
             params.extend([page_size, offset])
 
             rows = await conn.fetch(query, *params)
-            items = [row_to_dict(row) for row in rows]
+
+            items = []
+            for row in rows:
+                item = row_to_dict(row)
+                # Formata nome do cliente
+                if row.get('company_name'):
+                    item['customer_name'] = row['company_name']
+                elif row.get('first_name') or row.get('last_name'):
+                    item['customer_name'] = f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip()
+                else:
+                    item['customer_name'] = 'Consumidor Final'
+                items.append(item)
 
             return {
                 "items": items,
@@ -9044,80 +9181,4 @@ async def enviar_carta_correcao(
         raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
 
 
-@router.get("/nfe")
-async def list_nfe_emissions(
-    tenant_data: tuple = Depends(get_tenant_from_token),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    status: Optional[str] = None
-):
-    """Lista todas as NF-e emitidas pelo tenant"""
-    tenant, user = tenant_data
-
-    try:
-        conn = await get_tenant_connection(tenant)
-        if not conn:
-            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
-
-        try:
-            # Monta query base
-            where = ""
-            params = []
-            param_idx = 1
-
-            if status:
-                where = f"WHERE status = ${param_idx}"
-                params.append(status)
-                param_idx += 1
-
-            # Conta total
-            count_query = f"SELECT COUNT(*) FROM nfe_emissions {where}"
-            total = await conn.fetchval(count_query, *params)
-
-            # Busca com paginacao
-            offset = (page - 1) * per_page
-            query = f"""
-                SELECT n.id, n.numero_nfe, n.serie, n.chave_acesso, n.status,
-                       n.protocolo_autorizacao, n.data_autorizacao, n.modelo,
-                       n.valor_total, n.ambiente, n.created_at,
-                       n.cancelled_at, n.motivo_cancelamento,
-                       s.sale_number, c.first_name, c.last_name, c.company_name
-                FROM nfe_emissions n
-                LEFT JOIN sales s ON n.sale_id = s.id
-                LEFT JOIN customers c ON s.customer_id = CAST(c.id AS TEXT)
-                {where}
-                ORDER BY n.created_at DESC
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
-            params.extend([per_page, offset])
-
-            rows = await conn.fetch(query, *params)
-
-            items = []
-            for row in rows:
-                item = row_to_dict(row)
-                # Formata nome do cliente
-                if row['company_name']:
-                    item['customer_name'] = row['company_name']
-                elif row['first_name'] or row['last_name']:
-                    item['customer_name'] = f"{row['first_name'] or ''} {row['last_name'] or ''}".strip()
-                else:
-                    item['customer_name'] = 'Consumidor Final'
-                items.append(item)
-
-            return {
-                "items": items,
-                "total": total,
-                "page": page,
-                "per_page": per_page,
-                "total_pages": (total + per_page - 1) // per_page if total > 0 else 1
-            }
-        finally:
-            await conn.close()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Erro ao listar NF-e: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
 
