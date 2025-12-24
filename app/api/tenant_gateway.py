@@ -8581,6 +8581,9 @@ async def get_nfe(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             row = await conn.fetchrow(
                 "SELECT * FROM nfe_emissions WHERE id = $1",
                 nfe_id
@@ -8619,6 +8622,9 @@ async def emit_nfe(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             # Verifica se venda existe
             sale = await conn.fetchrow(
                 "SELECT id, sale_number, total_amount, customer_id FROM sales WHERE id = $1",
@@ -8763,6 +8769,9 @@ async def get_nfe_xml(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             row = await conn.fetchrow(
                 "SELECT chave_acesso, xml_nfe, xml_protocolo, status FROM nfe_emissions WHERE id = $1",
                 nfe_id
@@ -8807,6 +8816,9 @@ async def get_nfe_danfe(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             # Busca dados completos da NF-e
             nfe = await conn.fetchrow("""
                 SELECT n.*, s.sale_number, s.total_amount, s.subtotal,
@@ -8948,6 +8960,9 @@ async def cancel_nfe(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             row = await conn.fetchrow(
                 "SELECT id, status, data_autorizacao, chave_acesso FROM nfe_emissions WHERE id = $1",
                 nfe_id
@@ -9002,6 +9017,9 @@ async def get_sale_nfe_status(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             row = await conn.fetchrow("""
                 SELECT id, numero_nfe, serie, chave_acesso, status,
                        protocolo_autorizacao, data_autorizacao,
@@ -9067,6 +9085,9 @@ async def enviar_carta_correcao(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que as tabelas de NF-e existam
+            await ensure_nfe_tables(conn)
+
             # Busca NF-e
             nfe = await conn.fetchrow(
                 "SELECT * FROM nfe_emissions WHERE id = $1",
