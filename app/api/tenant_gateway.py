@@ -8076,6 +8076,9 @@ async def get_fiscal_settings(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que a tabela fiscal_settings exista
+            await ensure_nfe_tables(conn)
+
             row = await conn.fetchrow("SELECT * FROM fiscal_settings LIMIT 1")
 
             if row:
@@ -8126,6 +8129,9 @@ async def update_fiscal_settings(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que a tabela fiscal_settings exista
+            await ensure_nfe_tables(conn)
+
             # Verifica se ja existe registro
             existing = await conn.fetchrow("SELECT id FROM fiscal_settings LIMIT 1")
 
@@ -8271,6 +8277,9 @@ async def upload_certificate(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
+            # Garante que a tabela fiscal_settings exista
+            await ensure_nfe_tables(conn)
+
             # Verifica se ja existe registro
             existing = await conn.fetchrow("SELECT id FROM fiscal_settings LIMIT 1")
 
