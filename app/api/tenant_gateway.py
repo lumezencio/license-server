@@ -27,10 +27,22 @@ from app.database import get_db
 from app.models import Tenant, TenantStatus
 from app.core import settings
 from app.core.error_notifier import send_error_notification
-from app.services.nfe_service import (
-    NFeService, processar_emissao_nfe, processar_cancelamento_nfe,
-    DanfeGenerator, gerar_xml_carta_correcao
-)
+# Import condicional para nfe_service (requer lxml que pode nao estar instalado)
+try:
+    from app.services.nfe_service import (
+        NFeService, processar_emissao_nfe, processar_cancelamento_nfe,
+        DanfeGenerator, gerar_xml_carta_correcao
+    )
+    NFE_SERVICE_AVAILABLE = True
+except ImportError as e:
+    NFE_SERVICE_AVAILABLE = False
+    NFeService = None
+    processar_emissao_nfe = None
+    processar_cancelamento_nfe = None
+    DanfeGenerator = None
+    gerar_xml_carta_correcao = None
+    import logging as _logging
+    _logging.getLogger(__name__).warning(f"nfe_service nao disponivel: {e}")
 import logging
 import traceback
 
@@ -5301,12 +5313,41 @@ async def update_legal_calculation(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Verifica se existe
-        existing = await conn.fetchrow("SELECT id FROM legal_calculations WHERE id = $1", calc_id)
+        # Busca calculo existente com todos os dados
+        existing = await conn.fetchrow("SELECT * FROM legal_calculations WHERE id = $1", calc_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Calculo nao encontrado")
 
         data = await request.json()
+
+        # *** PROTECAO: Se frontend enviou debitos vazios, manter os originais ***
+        # Isso evita perda acidental de dados quando o formulario nao carrega corretamente
+        debitos_enviados = data.get("debitos", [])
+        creditos_enviados = data.get("creditos", [])
+        honorarios_enviados = data.get("honorarios", [])
+
+        # Carrega dados originais do metadata_calculo
+        existing_dict = row_to_dict(existing)
+        metadata_original = existing_dict.get("metadata_calculo") or existing_dict.get("result_data")
+        dados_originais = {}
+        if metadata_original:
+            if isinstance(metadata_original, str):
+                dados_originais = json.loads(metadata_original)
+            else:
+                dados_originais = metadata_original
+
+        # Se frontend enviou lista vazia mas havia dados originais, preservar
+        if not debitos_enviados and dados_originais.get("debitos"):
+            logger.warning(f"PUT legal-calculations: debitos vazios recebidos, preservando {len(dados_originais.get('debitos', []))} debitos originais")
+            data["debitos"] = dados_originais.get("debitos", [])
+
+        if not creditos_enviados and dados_originais.get("creditos"):
+            logger.warning(f"PUT legal-calculations: creditos vazios recebidos, preservando {len(dados_originais.get('creditos', []))} creditos originais")
+            data["creditos"] = dados_originais.get("creditos", [])
+
+        if not honorarios_enviados and dados_originais.get("honorarios"):
+            logger.warning(f"PUT legal-calculations: honorarios vazios recebidos, preservando {len(dados_originais.get('honorarios', []))} honorarios originais")
+            data["honorarios"] = dados_originais.get("honorarios", [])
 
         # *** EXECUTA OS CALCULOS DE CORRECAO E JUROS ***
         data_calculado = await calculate_all_debitos(data)
