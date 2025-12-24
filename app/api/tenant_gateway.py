@@ -8462,7 +8462,10 @@ async def ensure_nfe_tables(conn):
         return True
     except Exception as e:
         logger.error(f"Erro ao criar tabelas NF-e: {e}")
-        return False
+        import traceback
+        traceback.print_exc()
+        # Relanca a excecao para que o endpoint saiba que houve erro
+        raise Exception(f"Falha ao criar tabelas NF-e: {str(e)}")
 
 
 @router.get("/nfe")
