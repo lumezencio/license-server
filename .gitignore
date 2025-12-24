@@ -47,6 +47,12 @@ keys/
 *.log
 logs/
 
+# Backups
+backups/
+
+# Uploads
+uploads/
+
 # OS
 .DS_Store
 Thumbs.db

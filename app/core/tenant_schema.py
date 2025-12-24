@@ -19,6 +19,12 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
+DO $$ BEGIN
+    CREATE TYPE nfestatus AS ENUM ('PENDING', 'AUTHORIZED', 'REJECTED', 'CANCELLED', 'INUTILIZED', 'CONTINGENCY', 'ERROR');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
 -- =====================================================
 -- TABELA DE EMPRESA (COMPANIES)
 -- =====================================================
@@ -478,6 +484,130 @@ CREATE TABLE IF NOT EXISTS sale_items (
 
 CREATE INDEX IF NOT EXISTS idx_sale_item_sale ON sale_items(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sale_item_product ON sale_items(product_id);
+
+-- =====================================================
+-- CONFIGURAÇÕES FISCAIS (FISCAL_SETTINGS)
+-- Armazena configurações para emissão de NF-e via SEFAZ
+-- =====================================================
+CREATE TABLE IF NOT EXISTS fiscal_settings (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Certificado Digital A1
+    certificate_file BYTEA,
+    certificate_password_encrypted VARCHAR(500),
+    certificate_expires_at TIMESTAMP,
+    certificate_serial VARCHAR(100),
+    certificate_issuer VARCHAR(300),
+    certificate_subject VARCHAR(300),
+    -- Ambiente SEFAZ (1=Producao, 2=Homologacao)
+    ambiente INTEGER DEFAULT 2,
+    -- UF da empresa
+    uf VARCHAR(2) NOT NULL DEFAULT 'SP',
+    -- Código IBGE do município
+    codigo_municipio VARCHAR(10),
+    -- Numeração NF-e
+    serie_nfe INTEGER DEFAULT 1,
+    ultimo_numero_nfe INTEGER DEFAULT 0,
+    -- Numeração NFC-e (Nota Fiscal de Consumidor)
+    serie_nfce INTEGER DEFAULT 1,
+    ultimo_numero_nfce INTEGER DEFAULT 0,
+    -- Token CSC para NFC-e
+    csc_id VARCHAR(10),
+    csc_token VARCHAR(50),
+    -- Regime Tributário (1=Simples Nacional, 2=SN Excesso, 3=Regime Normal)
+    regime_tributario INTEGER DEFAULT 1,
+    -- CNAE Principal
+    cnae_principal VARCHAR(10),
+    -- Inscrição Municipal
+    inscricao_municipal VARCHAR(20),
+    -- Configurações de impressão
+    logo_danfe BYTEA,
+    mensagem_contribuinte TEXT,
+    -- Email para envio de NF-e
+    email_remetente VARCHAR(255),
+    email_copia VARCHAR(500),
+    -- Contingência
+    justificativa_contingencia TEXT,
+    data_contingencia TIMESTAMP,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_configured BOOLEAN DEFAULT FALSE
+);
+
+-- =====================================================
+-- EMISSÕES DE NF-e (NFE_EMISSIONS)
+-- Registra todas as NF-e emitidas
+-- =====================================================
+CREATE TABLE IF NOT EXISTS nfe_emissions (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento com venda
+    sale_id VARCHAR(36) REFERENCES sales(id),
+    -- Modelo (55=NF-e, 65=NFC-e)
+    modelo INTEGER DEFAULT 55,
+    -- Dados da NF-e
+    chave_acesso VARCHAR(44) UNIQUE,
+    numero_nfe INTEGER NOT NULL,
+    serie INTEGER NOT NULL,
+    -- Status da NF-e
+    status nfestatus DEFAULT 'PENDING',
+    -- Autorização
+    protocolo_autorizacao VARCHAR(20),
+    data_autorizacao TIMESTAMP,
+    digest_value VARCHAR(100),
+    -- Ambiente (1=Producao, 2=Homologacao)
+    ambiente INTEGER DEFAULT 2,
+    -- Tipo de emissão (1=Normal, 9=Contingência)
+    tipo_emissao INTEGER DEFAULT 1,
+    -- XML armazenado
+    xml_nfe TEXT,
+    xml_protocolo TEXT,
+    xml_evento TEXT,
+    -- DANFE (PDF em base64)
+    danfe_pdf TEXT,
+    -- Valores totais
+    valor_total DECIMAL(15,2) DEFAULT 0,
+    valor_produtos DECIMAL(15,2) DEFAULT 0,
+    valor_desconto DECIMAL(15,2) DEFAULT 0,
+    valor_frete DECIMAL(15,2) DEFAULT 0,
+    -- Impostos
+    valor_icms DECIMAL(15,2) DEFAULT 0,
+    valor_pis DECIMAL(15,2) DEFAULT 0,
+    valor_cofins DECIMAL(15,2) DEFAULT 0,
+    valor_ipi DECIMAL(15,2) DEFAULT 0,
+    -- Mensagens de retorno
+    codigo_retorno VARCHAR(10),
+    motivo_retorno TEXT,
+    -- Cancelamento
+    cancelled_at TIMESTAMP,
+    motivo_cancelamento TEXT,
+    protocolo_cancelamento VARCHAR(20),
+    xml_cancelamento TEXT,
+    -- Carta de Correção
+    ultima_carta_correcao TEXT,
+    total_cartas_correcao INTEGER DEFAULT 0,
+    -- Inutilização
+    inutilized_at TIMESTAMP,
+    justificativa_inutilizacao TEXT,
+    protocolo_inutilizacao VARCHAR(20),
+    -- Controle
+    tentativas_envio INTEGER DEFAULT 0,
+    ultimo_erro TEXT,
+    -- Email enviado
+    email_enviado BOOLEAN DEFAULT FALSE,
+    email_enviado_at TIMESTAMP,
+    email_destinatario VARCHAR(255),
+    -- Metadados
+    nfe_metadata JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_nfe_emissions_sale ON nfe_emissions(sale_id);
+CREATE INDEX IF NOT EXISTS idx_nfe_emissions_chave ON nfe_emissions(chave_acesso);
+CREATE INDEX IF NOT EXISTS idx_nfe_emissions_numero ON nfe_emissions(numero_nfe, serie);
+CREATE INDEX IF NOT EXISTS idx_nfe_emissions_status ON nfe_emissions(status);
+CREATE INDEX IF NOT EXISTS idx_nfe_emissions_data ON nfe_emissions(created_at);
 
 -- =====================================================
 -- TABELA DE ORÇAMENTOS (QUOTATIONS)

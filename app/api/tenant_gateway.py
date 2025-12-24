@@ -27,6 +27,7 @@ from app.database import get_db
 from app.models import Tenant, TenantStatus
 from app.core import settings
 from app.core.error_notifier import send_error_notification
+from app.services.nfe_service import NFeService, processar_emissao_nfe
 import logging
 import traceback
 
@@ -240,6 +241,60 @@ class EmployeeModel(BaseModel):
     state: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool = True
+
+
+class FiscalSettingsModel(BaseModel):
+    """Modelo para configuracoes fiscais NF-e"""
+    id: Optional[str] = None
+    # Ambiente SEFAZ (1=Producao, 2=Homologacao)
+    ambiente: int = 2
+    # UF da empresa
+    uf: str = "SP"
+    # Codigo IBGE do municipio
+    codigo_municipio: Optional[str] = None
+    # Numeracao NF-e
+    serie_nfe: int = 1
+    ultimo_numero_nfe: int = 0
+    # Numeracao NFC-e
+    serie_nfce: int = 1
+    ultimo_numero_nfce: int = 0
+    # Token CSC para NFC-e
+    csc_id: Optional[str] = None
+    csc_token: Optional[str] = None
+    # Regime Tributario (1=Simples Nacional, 2=SN Excesso, 3=Regime Normal)
+    regime_tributario: int = 1
+    # CNAE Principal
+    cnae_principal: Optional[str] = None
+    # Inscricao Municipal
+    inscricao_municipal: Optional[str] = None
+    # Mensagem para contribuinte
+    mensagem_contribuinte: Optional[str] = None
+    # Email para envio
+    email_remetente: Optional[str] = None
+    email_copia: Optional[str] = None
+    # Status
+    is_active: bool = True
+    is_configured: bool = False
+
+
+class NFeEmissionModel(BaseModel):
+    """Modelo para emissao de NF-e"""
+    sale_id: str
+    # Modelo (55=NF-e, 65=NFC-e)
+    modelo: int = 55
+    # Ambiente (1=Producao, 2=Homologacao) - herda das configuracoes se nao informado
+    ambiente: Optional[int] = None
+
+
+class NFeEventModel(BaseModel):
+    """Modelo para eventos de NF-e (cancelamento, carta correcao, etc)"""
+    nfe_id: str
+    tipo_evento: str  # 'cancelamento', 'carta_correcao', 'inutilizacao'
+    justificativa: str
+    # Para inutilizacao
+    numero_inicial: Optional[int] = None
+    numero_final: Optional[int] = None
+    serie: Optional[int] = None
 
 
 # === HELPERS ===
@@ -7999,4 +8054,741 @@ async def save_backup_schedule(
     except Exception as e:
         logger.error(f"Erro ao salvar agendamento: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao salvar agendamento: {str(e)}")
+
+
+# =====================================================
+# CONFIGURACOES FISCAIS - NF-e
+# =====================================================
+
+@router.get("/fiscal-settings")
+async def get_fiscal_settings(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna configuracoes fiscais do tenant"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            row = await conn.fetchrow("SELECT * FROM fiscal_settings LIMIT 1")
+
+            if row:
+                result = row_to_dict(row)
+                # Remove campos sensiveis
+                if 'certificate_file' in result:
+                    result['has_certificate'] = result['certificate_file'] is not None
+                    del result['certificate_file']
+                if 'certificate_password_encrypted' in result:
+                    del result['certificate_password_encrypted']
+                return result
+            else:
+                # Retorna configuracoes padrao se nao existir
+                return {
+                    "id": None,
+                    "ambiente": 2,
+                    "uf": "SP",
+                    "serie_nfe": 1,
+                    "ultimo_numero_nfe": 0,
+                    "serie_nfce": 1,
+                    "ultimo_numero_nfce": 0,
+                    "regime_tributario": 1,
+                    "is_active": True,
+                    "is_configured": False,
+                    "has_certificate": False
+                }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar configuracoes fiscais: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar configuracoes fiscais: {str(e)}")
+
+
+@router.put("/fiscal-settings")
+async def update_fiscal_settings(
+    settings_data: FiscalSettingsModel,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Atualiza configuracoes fiscais do tenant"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            # Verifica se ja existe registro
+            existing = await conn.fetchrow("SELECT id FROM fiscal_settings LIMIT 1")
+
+            if existing:
+                # UPDATE
+                await conn.execute("""
+                    UPDATE fiscal_settings SET
+                        ambiente = $1,
+                        uf = $2,
+                        codigo_municipio = $3,
+                        serie_nfe = $4,
+                        ultimo_numero_nfe = $5,
+                        serie_nfce = $6,
+                        ultimo_numero_nfce = $7,
+                        csc_id = $8,
+                        csc_token = $9,
+                        regime_tributario = $10,
+                        cnae_principal = $11,
+                        inscricao_municipal = $12,
+                        mensagem_contribuinte = $13,
+                        email_remetente = $14,
+                        email_copia = $15,
+                        is_active = $16,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $17
+                """,
+                    settings_data.ambiente,
+                    settings_data.uf,
+                    settings_data.codigo_municipio,
+                    settings_data.serie_nfe,
+                    settings_data.ultimo_numero_nfe,
+                    settings_data.serie_nfce,
+                    settings_data.ultimo_numero_nfce,
+                    settings_data.csc_id,
+                    settings_data.csc_token,
+                    settings_data.regime_tributario,
+                    settings_data.cnae_principal,
+                    settings_data.inscricao_municipal,
+                    settings_data.mensagem_contribuinte,
+                    settings_data.email_remetente,
+                    settings_data.email_copia,
+                    settings_data.is_active,
+                    existing['id']
+                )
+                settings_id = existing['id']
+            else:
+                # INSERT
+                settings_id = str(uuid_lib.uuid4())
+                await conn.execute("""
+                    INSERT INTO fiscal_settings (
+                        id, ambiente, uf, codigo_municipio,
+                        serie_nfe, ultimo_numero_nfe,
+                        serie_nfce, ultimo_numero_nfce,
+                        csc_id, csc_token, regime_tributario,
+                        cnae_principal, inscricao_municipal,
+                        mensagem_contribuinte, email_remetente, email_copia,
+                        is_active, is_configured
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                """,
+                    settings_id,
+                    settings_data.ambiente,
+                    settings_data.uf,
+                    settings_data.codigo_municipio,
+                    settings_data.serie_nfe,
+                    settings_data.ultimo_numero_nfe,
+                    settings_data.serie_nfce,
+                    settings_data.ultimo_numero_nfce,
+                    settings_data.csc_id,
+                    settings_data.csc_token,
+                    settings_data.regime_tributario,
+                    settings_data.cnae_principal,
+                    settings_data.inscricao_municipal,
+                    settings_data.mensagem_contribuinte,
+                    settings_data.email_remetente,
+                    settings_data.email_copia,
+                    settings_data.is_active,
+                    False  # is_configured - True somente quando certificado for enviado
+                )
+
+            logger.info(f"[FISCAL] Configuracoes fiscais atualizadas para tenant {tenant.tenant_code}")
+            return {"success": True, "id": settings_id, "message": "Configuracoes salvas com sucesso"}
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao salvar configuracoes fiscais: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar configuracoes fiscais: {str(e)}")
+
+
+@router.post("/fiscal-settings/certificate")
+async def upload_certificate(
+    certificate: UploadFile = File(...),
+    password: str = Query(..., description="Senha do certificado"),
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Upload do certificado digital A1 (.pfx)"""
+    tenant, user = tenant_data
+
+    try:
+        # Valida extensao
+        if not certificate.filename.lower().endswith('.pfx'):
+            raise HTTPException(status_code=400, detail="Arquivo deve ser um certificado .pfx")
+
+        # Le o arquivo
+        cert_data = await certificate.read()
+
+        # Tenta validar o certificado com a senha
+        try:
+            from cryptography.hazmat.primitives.serialization import pkcs12
+            from cryptography.hazmat.backends import default_backend
+            from cryptography import x509
+
+            private_key, cert, chain = pkcs12.load_key_and_certificates(
+                cert_data, password.encode(), default_backend()
+            )
+
+            # Extrai informacoes do certificado
+            cert_serial = format(cert.serial_number, 'x')
+            cert_issuer = cert.issuer.rfc4514_string()
+            cert_subject = cert.subject.rfc4514_string()
+            cert_expires = cert.not_valid_after_utc
+
+            logger.info(f"[FISCAL] Certificado valido. Expira em: {cert_expires}")
+
+        except Exception as e:
+            logger.error(f"Erro ao validar certificado: {e}")
+            raise HTTPException(status_code=400, detail=f"Certificado invalido ou senha incorreta: {str(e)}")
+
+        # Criptografa a senha para armazenar
+        from cryptography.fernet import Fernet
+        import base64
+        import hashlib
+
+        # Usa uma chave derivada da secret key
+        key = base64.urlsafe_b64encode(hashlib.sha256(settings.SECRET_KEY.encode()).digest())
+        fernet = Fernet(key)
+        encrypted_password = fernet.encrypt(password.encode()).decode()
+
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            # Verifica se ja existe registro
+            existing = await conn.fetchrow("SELECT id FROM fiscal_settings LIMIT 1")
+
+            if existing:
+                await conn.execute("""
+                    UPDATE fiscal_settings SET
+                        certificate_file = $1,
+                        certificate_password_encrypted = $2,
+                        certificate_expires_at = $3,
+                        certificate_serial = $4,
+                        certificate_issuer = $5,
+                        certificate_subject = $6,
+                        is_configured = TRUE,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $7
+                """,
+                    cert_data,
+                    encrypted_password,
+                    cert_expires,
+                    cert_serial,
+                    cert_issuer,
+                    cert_subject,
+                    existing['id']
+                )
+            else:
+                # Cria registro com certificado
+                settings_id = str(uuid_lib.uuid4())
+                await conn.execute("""
+                    INSERT INTO fiscal_settings (
+                        id, certificate_file, certificate_password_encrypted,
+                        certificate_expires_at, certificate_serial,
+                        certificate_issuer, certificate_subject,
+                        is_configured
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+                """,
+                    settings_id,
+                    cert_data,
+                    encrypted_password,
+                    cert_expires,
+                    cert_serial,
+                    cert_issuer,
+                    cert_subject
+                )
+
+            logger.info(f"[FISCAL] Certificado digital enviado para tenant {tenant.tenant_code}")
+            return {
+                "success": True,
+                "message": "Certificado enviado com sucesso",
+                "certificate_expires_at": cert_expires.isoformat(),
+                "certificate_subject": cert_subject
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao processar certificado: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar certificado: {str(e)}")
+
+
+# =====================================================
+# NF-e EMISSIONS
+# =====================================================
+
+@router.get("/nfe")
+async def list_nfe(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(None, description="Filtrar por status"),
+    sale_id: Optional[str] = Query(None, description="Filtrar por venda"),
+    data_inicio: Optional[str] = Query(None, description="Data inicial (YYYY-MM-DD)"),
+    data_fim: Optional[str] = Query(None, description="Data final (YYYY-MM-DD)"),
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Lista NF-e emitidas"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            # Monta query com filtros
+            where_clauses = []
+            params = []
+            param_idx = 1
+
+            if status:
+                where_clauses.append(f"status = ${param_idx}")
+                params.append(status.upper())
+                param_idx += 1
+
+            if sale_id:
+                where_clauses.append(f"sale_id = ${param_idx}")
+                params.append(sale_id)
+                param_idx += 1
+
+            if data_inicio:
+                where_clauses.append(f"created_at >= ${param_idx}")
+                params.append(datetime.strptime(data_inicio, '%Y-%m-%d'))
+                param_idx += 1
+
+            if data_fim:
+                where_clauses.append(f"created_at <= ${param_idx}")
+                params.append(datetime.strptime(data_fim, '%Y-%m-%d').replace(hour=23, minute=59, second=59))
+                param_idx += 1
+
+            where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+            # Count total
+            count_query = f"SELECT COUNT(*) FROM nfe_emissions WHERE {where_sql}"
+            total = await conn.fetchval(count_query, *params)
+
+            # Busca registros
+            offset = (page - 1) * page_size
+            query = f"""
+                SELECT
+                    id, sale_id, modelo, chave_acesso, numero_nfe, serie,
+                    status, protocolo_autorizacao, data_autorizacao, ambiente,
+                    valor_total, valor_produtos, codigo_retorno, motivo_retorno,
+                    cancelled_at, email_enviado, created_at, updated_at
+                FROM nfe_emissions
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            params.extend([page_size, offset])
+
+            rows = await conn.fetch(query, *params)
+            items = [row_to_dict(row) for row in rows]
+
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "pages": (total + page_size - 1) // page_size if total else 0
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao listar NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao listar NF-e: {str(e)}")
+
+
+@router.get("/nfe/{nfe_id}")
+async def get_nfe(
+    nfe_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna detalhes de uma NF-e"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            row = await conn.fetchrow(
+                "SELECT * FROM nfe_emissions WHERE id = $1",
+                nfe_id
+            )
+
+            if not row:
+                raise HTTPException(status_code=404, detail="NF-e nao encontrada")
+
+            result = row_to_dict(row)
+            return result
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar NF-e: {str(e)}")
+
+
+@router.post("/nfe/emit")
+async def emit_nfe(
+    emission_data: NFeEmissionModel,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """
+    Emite uma NF-e para uma venda.
+    Cria o registro de emissao em status PENDING.
+    O processamento real sera feito pelo servico de NF-e (implementacao futura).
+    """
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            # Verifica se venda existe
+            sale = await conn.fetchrow(
+                "SELECT id, sale_number, total_amount, customer_id FROM sales WHERE id = $1",
+                emission_data.sale_id
+            )
+            if not sale:
+                raise HTTPException(status_code=404, detail="Venda nao encontrada")
+
+            # Verifica se ja existe NF-e para esta venda
+            existing = await conn.fetchrow(
+                "SELECT id, status, chave_acesso FROM nfe_emissions WHERE sale_id = $1 AND status != 'CANCELLED'",
+                emission_data.sale_id
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Ja existe NF-e para esta venda. Status: {existing['status']}"
+                )
+
+            # Busca configuracoes fiscais
+            settings_row = await conn.fetchrow("SELECT * FROM fiscal_settings WHERE is_active = TRUE LIMIT 1")
+            if not settings_row:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Configuracoes fiscais nao encontradas. Configure as configuracoes fiscais primeiro."
+                )
+
+            if not settings_row['is_configured']:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Certificado digital nao configurado. Envie o certificado A1 primeiro."
+                )
+
+            # Determina ambiente
+            ambiente = emission_data.ambiente or settings_row['ambiente']
+
+            # Proximo numero da NF-e
+            if emission_data.modelo == 55:
+                proximo_numero = settings_row['ultimo_numero_nfe'] + 1
+                serie = settings_row['serie_nfe']
+            else:  # NFC-e (65)
+                proximo_numero = settings_row['ultimo_numero_nfce'] + 1
+                serie = settings_row['serie_nfce']
+
+            # Cria registro de emissao
+            nfe_id = str(uuid_lib.uuid4())
+            await conn.execute("""
+                INSERT INTO nfe_emissions (
+                    id, sale_id, modelo, numero_nfe, serie,
+                    status, ambiente, valor_total, valor_produtos
+                ) VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $7)
+            """,
+                nfe_id,
+                emission_data.sale_id,
+                emission_data.modelo,
+                proximo_numero,
+                serie,
+                ambiente,
+                float(sale['total_amount'])
+            )
+
+            # Atualiza ultimo numero
+            if emission_data.modelo == 55:
+                await conn.execute(
+                    "UPDATE fiscal_settings SET ultimo_numero_nfe = $1, updated_at = CURRENT_TIMESTAMP",
+                    proximo_numero
+                )
+            else:
+                await conn.execute(
+                    "UPDATE fiscal_settings SET ultimo_numero_nfce = $1, updated_at = CURRENT_TIMESTAMP",
+                    proximo_numero
+                )
+
+            logger.info(f"[NFE] Emissao criada: {nfe_id} para venda {emission_data.sale_id}")
+
+            # Processa a emissao imediatamente
+            try:
+                nfe_service = NFeService()
+                result = await processar_emissao_nfe(conn, nfe_id, nfe_service)
+
+                if result.get('success'):
+                    logger.info(f"[NFE] Emissao processada com sucesso: {nfe_id}")
+                    return {
+                        "success": True,
+                        "nfe_id": nfe_id,
+                        "numero_nfe": proximo_numero,
+                        "serie": serie,
+                        "modelo": emission_data.modelo,
+                        "ambiente": ambiente,
+                        "status": result.get('status', 'AUTHORIZED'),
+                        "chave_acesso": result.get('chave_acesso'),
+                        "protocolo": result.get('protocolo'),
+                        "message": result.get('message', 'NF-e autorizada com sucesso')
+                    }
+                else:
+                    logger.warning(f"[NFE] Falha no processamento: {result.get('error')}")
+                    return {
+                        "success": False,
+                        "nfe_id": nfe_id,
+                        "numero_nfe": proximo_numero,
+                        "serie": serie,
+                        "modelo": emission_data.modelo,
+                        "ambiente": ambiente,
+                        "status": "ERROR",
+                        "message": result.get('error', 'Erro ao processar NF-e')
+                    }
+
+            except Exception as proc_error:
+                logger.error(f"[NFE] Erro no processamento: {proc_error}")
+                # Retorna sucesso parcial - registro foi criado, mas processamento falhou
+                return {
+                    "success": True,
+                    "nfe_id": nfe_id,
+                    "numero_nfe": proximo_numero,
+                    "serie": serie,
+                    "modelo": emission_data.modelo,
+                    "ambiente": ambiente,
+                    "status": "PENDING",
+                    "message": f"NF-e criada. Processamento sera retentado. Erro: {str(proc_error)}"
+                }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao emitir NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao emitir NF-e: {str(e)}")
+
+
+@router.get("/nfe/{nfe_id}/xml")
+async def get_nfe_xml(
+    nfe_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna o XML da NF-e autorizada"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            row = await conn.fetchrow(
+                "SELECT chave_acesso, xml_nfe, xml_protocolo, status FROM nfe_emissions WHERE id = $1",
+                nfe_id
+            )
+
+            if not row:
+                raise HTTPException(status_code=404, detail="NF-e nao encontrada")
+
+            if row['status'] != 'AUTHORIZED':
+                raise HTTPException(status_code=400, detail="NF-e ainda nao foi autorizada")
+
+            if not row['xml_nfe']:
+                raise HTTPException(status_code=404, detail="XML da NF-e nao disponivel")
+
+            return {
+                "chave_acesso": row['chave_acesso'],
+                "xml_nfe": row['xml_nfe'],
+                "xml_protocolo": row['xml_protocolo']
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar XML da NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar XML: {str(e)}")
+
+
+@router.get("/nfe/{nfe_id}/danfe")
+async def get_nfe_danfe(
+    nfe_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna o DANFE (PDF) da NF-e"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            row = await conn.fetchrow(
+                "SELECT numero_nfe, danfe_pdf, status FROM nfe_emissions WHERE id = $1",
+                nfe_id
+            )
+
+            if not row:
+                raise HTTPException(status_code=404, detail="NF-e nao encontrada")
+
+            if row['status'] != 'AUTHORIZED':
+                raise HTTPException(status_code=400, detail="NF-e ainda nao foi autorizada")
+
+            if not row['danfe_pdf']:
+                raise HTTPException(status_code=404, detail="DANFE nao disponivel")
+
+            return {
+                "numero_nfe": row['numero_nfe'],
+                "danfe_pdf": row['danfe_pdf']  # Base64
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar DANFE: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar DANFE: {str(e)}")
+
+
+@router.post("/nfe/{nfe_id}/cancel")
+async def cancel_nfe(
+    nfe_id: str,
+    justificativa: str = Query(..., min_length=15, max_length=255),
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """
+    Cancela uma NF-e autorizada.
+    Prazo: 24 horas apos autorizacao (para NF-e modelo 55).
+    """
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, status, data_autorizacao, chave_acesso FROM nfe_emissions WHERE id = $1",
+                nfe_id
+            )
+
+            if not row:
+                raise HTTPException(status_code=404, detail="NF-e nao encontrada")
+
+            if row['status'] != 'AUTHORIZED':
+                raise HTTPException(status_code=400, detail=f"NF-e nao pode ser cancelada. Status atual: {row['status']}")
+
+            # Verifica prazo de 24 horas
+            if row['data_autorizacao']:
+                horas_desde_autorizacao = (datetime.utcnow() - row['data_autorizacao']).total_seconds() / 3600
+                if horas_desde_autorizacao > 24:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Prazo de 24 horas para cancelamento expirado"
+                    )
+
+            # Atualiza status para cancelamento pendente
+            await conn.execute("""
+                UPDATE nfe_emissions SET
+                    status = 'CANCELLED',
+                    cancelled_at = CURRENT_TIMESTAMP,
+                    motivo_cancelamento = $1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $2
+            """, justificativa, nfe_id)
+
+            logger.info(f"[NFE] Cancelamento solicitado para NF-e {nfe_id}")
+
+            return {
+                "success": True,
+                "message": "Cancelamento registrado. Sera processado em breve.",
+                "nfe_id": nfe_id
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao cancelar NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao cancelar NF-e: {str(e)}")
+
+
+@router.get("/sales/{sale_id}/nfe-status")
+async def get_sale_nfe_status(
+    sale_id: str,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna o status da NF-e de uma venda"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            row = await conn.fetchrow("""
+                SELECT id, numero_nfe, serie, chave_acesso, status,
+                       protocolo_autorizacao, data_autorizacao,
+                       codigo_retorno, motivo_retorno, cancelled_at
+                FROM nfe_emissions
+                WHERE sale_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, sale_id)
+
+            if not row:
+                return {
+                    "has_nfe": False,
+                    "message": "Nenhuma NF-e emitida para esta venda"
+                }
+
+            result = row_to_dict(row)
+            result['has_nfe'] = True
+            return result
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar status NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar status: {str(e)}")
 
