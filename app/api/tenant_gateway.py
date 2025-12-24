@@ -27,7 +27,10 @@ from app.database import get_db
 from app.models import Tenant, TenantStatus
 from app.core import settings
 from app.core.error_notifier import send_error_notification
-from app.services.nfe_service import NFeService, processar_emissao_nfe
+from app.services.nfe_service import (
+    NFeService, processar_emissao_nfe, processar_cancelamento_nfe,
+    DanfeGenerator, gerar_xml_carta_correcao
+)
 import logging
 import traceback
 
@@ -8648,7 +8651,8 @@ async def get_nfe_danfe(
     nfe_id: str,
     tenant_data: tuple = Depends(get_tenant_from_token)
 ):
-    """Retorna o DANFE (PDF) da NF-e"""
+    """Retorna o DANFE (PDF) da NF-e. Gera dinamicamente se nao existir."""
+    import base64
     tenant, user = tenant_data
 
     try:
@@ -8657,23 +8661,116 @@ async def get_nfe_danfe(
             raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
 
         try:
-            row = await conn.fetchrow(
-                "SELECT numero_nfe, danfe_pdf, status FROM nfe_emissions WHERE id = $1",
-                nfe_id
-            )
+            # Busca dados completos da NF-e
+            nfe = await conn.fetchrow("""
+                SELECT n.*, s.sale_number, s.total_amount, s.subtotal,
+                       s.discount_amount, s.shipping_amount, s.customer_id
+                FROM nfe_emissions n
+                LEFT JOIN sales s ON n.sale_id = s.id
+                WHERE n.id = $1
+            """, nfe_id)
 
-            if not row:
+            if not nfe:
                 raise HTTPException(status_code=404, detail="NF-e nao encontrada")
 
-            if row['status'] != 'AUTHORIZED':
+            if nfe['status'] != 'AUTHORIZED':
                 raise HTTPException(status_code=400, detail="NF-e ainda nao foi autorizada")
 
-            if not row['danfe_pdf']:
-                raise HTTPException(status_code=404, detail="DANFE nao disponivel")
+            # Se ja tem DANFE gerado, retorna
+            if nfe['danfe_pdf']:
+                return {
+                    "numero_nfe": nfe['numero_nfe'],
+                    "danfe_pdf": nfe['danfe_pdf']
+                }
+
+            # Senao, gera DANFE dinamicamente
+            # Busca dados da empresa
+            company = await conn.fetchrow("SELECT * FROM companies LIMIT 1")
+
+            # Busca dados do cliente
+            customer = None
+            if nfe['customer_id']:
+                customer = await conn.fetchrow(
+                    "SELECT * FROM customers WHERE id = $1",
+                    nfe['customer_id']
+                )
+
+            # Busca itens da venda
+            items = []
+            if nfe['sale_id']:
+                items = await conn.fetch(
+                    "SELECT * FROM sale_items WHERE sale_id = $1",
+                    nfe['sale_id']
+                )
+
+            # Monta dados para DANFE
+            dados_danfe = {
+                'numero_nfe': str(nfe['numero_nfe']).zfill(9),
+                'serie': nfe['serie'],
+                'chave_acesso': nfe['chave_acesso'] or '',
+                'protocolo': nfe['protocolo_autorizacao'] or '',
+                'data_autorizacao': nfe['data_autorizacao'].strftime('%d/%m/%Y %H:%M:%S') if nfe['data_autorizacao'] else '',
+                'valor_produtos': float(nfe['valor_produtos'] or 0),
+                'valor_frete': float(nfe['shipping_amount'] or 0) if nfe['shipping_amount'] else 0,
+                'valor_desconto': float(nfe['valor_desconto'] or 0),
+                'valor_total': float(nfe['valor_total'] or 0),
+            }
+
+            # Dados emitente
+            if company:
+                dados_danfe['emit_nome'] = company['legal_name'] or company['trade_name'] or ''
+                dados_danfe['emit_cnpj'] = company['document'] or ''
+                dados_danfe['emit_ie'] = company['state_registration'] or 'ISENTO'
+                endereco = f"{company['street'] or ''}, {company['number'] or 'S/N'}"
+                if company['neighborhood']:
+                    endereco += f" - {company['neighborhood']}"
+                if company['city']:
+                    endereco += f" - {company['city']}/{company['state'] or ''}"
+                dados_danfe['emit_endereco'] = endereco
+
+            # Dados destinatario
+            if customer:
+                nome = customer['company_name'] or customer['trade_name'] or \
+                       f"{customer['first_name'] or ''} {customer['last_name'] or ''}".strip() or 'CONSUMIDOR'
+                dados_danfe['dest_nome'] = nome
+                cpf_cnpj = customer['cpf_cnpj'] or ''
+                if len(cpf_cnpj.replace('.', '').replace('-', '').replace('/', '')) == 11:
+                    dados_danfe['dest_cpf'] = cpf_cnpj
+                else:
+                    dados_danfe['dest_cnpj'] = cpf_cnpj
+                endereco = f"{customer['address'] or ''}, {customer['address_number'] or 'S/N'}"
+                if customer['neighborhood']:
+                    endereco += f" - {customer['neighborhood']}"
+                if customer['city']:
+                    endereco += f" - {customer['city']}/{customer['state'] or ''}"
+                dados_danfe['dest_endereco'] = endereco
+
+            # Itens
+            dados_danfe['itens'] = []
+            for item in items:
+                dados_danfe['itens'].append({
+                    'codigo': item['product_code'] or str(item['id'])[:12],
+                    'descricao': item['product_name'] or 'PRODUTO',
+                    'unidade': item['unit'] or 'UN',
+                    'quantidade': float(item['quantity'] or 1),
+                    'valor_unitario': float(item['unit_price'] or 0),
+                    'valor_total': float(item['total_amount'] or 0),
+                })
+
+            # Gera DANFE
+            generator = DanfeGenerator()
+            danfe_bytes = generator.gerar_danfe(dados_danfe)
+            danfe_base64 = base64.b64encode(danfe_bytes).decode('utf-8')
+
+            # Salva no banco para cache
+            await conn.execute(
+                "UPDATE nfe_emissions SET danfe_pdf = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                danfe_base64, nfe_id
+            )
 
             return {
-                "numero_nfe": row['numero_nfe'],
-                "danfe_pdf": row['danfe_pdf']  # Base64
+                "numero_nfe": nfe['numero_nfe'],
+                "danfe_pdf": danfe_base64
             }
         finally:
             await conn.close()
@@ -8681,7 +8778,9 @@ async def get_nfe_danfe(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Erro ao buscar DANFE: {e}")
+        logger.error(f"Erro ao buscar/gerar DANFE: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao buscar DANFE: {str(e)}")
 
 
@@ -8714,32 +8813,25 @@ async def cancel_nfe(
             if row['status'] != 'AUTHORIZED':
                 raise HTTPException(status_code=400, detail=f"NF-e nao pode ser cancelada. Status atual: {row['status']}")
 
-            # Verifica prazo de 24 horas
-            if row['data_autorizacao']:
-                horas_desde_autorizacao = (datetime.utcnow() - row['data_autorizacao']).total_seconds() / 3600
-                if horas_desde_autorizacao > 24:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Prazo de 24 horas para cancelamento expirado"
-                    )
+            # Processa cancelamento usando servico NF-e
+            nfe_service = NFeService()
+            result = await processar_cancelamento_nfe(
+                conn, nfe_id, justificativa, nfe_service
+            )
 
-            # Atualiza status para cancelamento pendente
-            await conn.execute("""
-                UPDATE nfe_emissions SET
-                    status = 'CANCELLED',
-                    cancelled_at = CURRENT_TIMESTAMP,
-                    motivo_cancelamento = $1,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = $2
-            """, justificativa, nfe_id)
-
-            logger.info(f"[NFE] Cancelamento solicitado para NF-e {nfe_id}")
-
-            return {
-                "success": True,
-                "message": "Cancelamento registrado. Sera processado em breve.",
-                "nfe_id": nfe_id
-            }
+            if result.get('success'):
+                logger.info(f"[NFE] Cancelamento processado para NF-e {nfe_id}")
+                return {
+                    "success": True,
+                    "message": result.get('message', 'NF-e cancelada com sucesso'),
+                    "protocolo": result.get('protocolo'),
+                    "nfe_id": nfe_id
+                }
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=result.get('error', 'Erro ao cancelar NF-e')
+                )
         finally:
             await conn.close()
 
@@ -8791,4 +8883,241 @@ async def get_sale_nfe_status(
     except Exception as e:
         logger.error(f"Erro ao buscar status NF-e: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao buscar status: {str(e)}")
+
+
+class CartaCorrecaoModel(BaseModel):
+    """Modelo para Carta de Correcao"""
+    texto_correcao: str
+
+
+@router.post("/nfe/{nfe_id}/carta-correcao")
+async def enviar_carta_correcao(
+    nfe_id: str,
+    dados: CartaCorrecaoModel,
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """
+    Envia Carta de Correcao (CC-e) para uma NF-e autorizada.
+    Permite ate 20 cartas de correcao por NF-e.
+    Texto deve ter entre 15 e 1000 caracteres.
+    """
+    tenant, user = tenant_data
+
+    # Valida texto
+    if len(dados.texto_correcao) < 15:
+        raise HTTPException(
+            status_code=400,
+            detail="Texto da correcao deve ter no minimo 15 caracteres"
+        )
+    if len(dados.texto_correcao) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="Texto da correcao deve ter no maximo 1000 caracteres"
+        )
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            # Busca NF-e
+            nfe = await conn.fetchrow(
+                "SELECT * FROM nfe_emissions WHERE id = $1",
+                nfe_id
+            )
+
+            if not nfe:
+                raise HTTPException(status_code=404, detail="NF-e nao encontrada")
+
+            if nfe['status'] != 'AUTHORIZED':
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Carta de correcao so pode ser enviada para NF-e autorizada. Status: {nfe['status']}"
+                )
+
+            # Verifica limite de 20 cartas
+            total_cartas = nfe['total_cartas_correcao'] or 0
+            if total_cartas >= 20:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Limite de 20 cartas de correcao atingido"
+                )
+
+            sequencia = total_cartas + 1
+
+            # Busca configuracoes fiscais
+            fiscal = await conn.fetchrow(
+                "SELECT * FROM fiscal_settings WHERE is_active = TRUE LIMIT 1"
+            )
+
+            if not fiscal:
+                raise HTTPException(status_code=400, detail="Configuracoes fiscais nao encontradas")
+
+            # Busca CNPJ
+            company = await conn.fetchrow("SELECT document FROM companies LIMIT 1")
+            cnpj = (company['document'] or '').replace('.', '').replace('/', '').replace('-', '')
+
+            # Gera XML
+            xml_cce = gerar_xml_carta_correcao(
+                chave_acesso=nfe['chave_acesso'],
+                texto_correcao=dados.texto_correcao,
+                cnpj_emitente=cnpj,
+                sequencia=sequencia,
+                ambiente=nfe['ambiente']
+            )
+
+            # Assina XML
+            nfe_service = NFeService()
+            nfe_service.load_certificate(
+                fiscal['certificate_file'],
+                fiscal['certificate_password_encrypted']
+            )
+            xml_assinado = nfe_service.assinar_xml(xml_cce)
+
+            # Em homologacao, simula sucesso
+            if nfe['ambiente'] == 2:
+                protocolo_cce = f"CCE{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+                await conn.execute("""
+                    UPDATE nfe_emissions SET
+                        ultima_carta_correcao = $1,
+                        total_cartas_correcao = $2,
+                        xml_evento = COALESCE(xml_evento, '') || $3,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $4
+                """, dados.texto_correcao, sequencia, xml_assinado + '\n---\n', nfe_id)
+
+                logger.info(f"[NFE] Carta de correcao {sequencia} enviada para NF-e {nfe_id}")
+
+                return {
+                    "success": True,
+                    "message": f"Carta de correcao {sequencia} registrada com sucesso (homologacao)",
+                    "protocolo": protocolo_cce,
+                    "sequencia": sequencia,
+                    "nfe_id": nfe_id
+                }
+
+            # Em producao, envia para SEFAZ
+            from app.services.nfe_service import SefazClient
+            url = nfe_service.get_sefaz_url(fiscal['uf'], 'RecepcaoEvento', nfe['ambiente'])
+            if not url:
+                raise HTTPException(status_code=500, detail="URL do servico nao encontrada")
+
+            client = SefazClient(
+                fiscal['certificate_file'],
+                nfe_service._decrypt_password(fiscal['certificate_password_encrypted'])
+            )
+
+            result = client.enviar_evento(xml_assinado, url)
+
+            if result.get('success'):
+                await conn.execute("""
+                    UPDATE nfe_emissions SET
+                        ultima_carta_correcao = $1,
+                        total_cartas_correcao = $2,
+                        xml_evento = COALESCE(xml_evento, '') || $3,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $4
+                """, dados.texto_correcao, sequencia, xml_assinado + '\n---\n', nfe_id)
+
+                return {
+                    "success": True,
+                    "message": f"Carta de correcao {sequencia} registrada com sucesso",
+                    "protocolo": result.get('protocolo'),
+                    "sequencia": sequencia,
+                    "nfe_id": nfe_id
+                }
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=result.get('xMotivo', 'Erro ao enviar carta de correcao')
+                )
+
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao enviar carta de correcao: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
+
+
+@router.get("/nfe")
+async def list_nfe_emissions(
+    tenant_data: tuple = Depends(get_tenant_from_token),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    status: Optional[str] = None
+):
+    """Lista todas as NF-e emitidas pelo tenant"""
+    tenant, user = tenant_data
+
+    try:
+        conn = await get_tenant_connection(tenant)
+        if not conn:
+            raise HTTPException(status_code=500, detail="Erro ao conectar ao banco do tenant")
+
+        try:
+            # Monta query base
+            where = ""
+            params = []
+            param_idx = 1
+
+            if status:
+                where = f"WHERE status = ${param_idx}"
+                params.append(status)
+                param_idx += 1
+
+            # Conta total
+            count_query = f"SELECT COUNT(*) FROM nfe_emissions {where}"
+            total = await conn.fetchval(count_query, *params)
+
+            # Busca com paginacao
+            offset = (page - 1) * per_page
+            query = f"""
+                SELECT n.id, n.numero_nfe, n.serie, n.chave_acesso, n.status,
+                       n.protocolo_autorizacao, n.data_autorizacao, n.modelo,
+                       n.valor_total, n.ambiente, n.created_at,
+                       n.cancelled_at, n.motivo_cancelamento,
+                       s.sale_number, c.first_name, c.last_name, c.company_name
+                FROM nfe_emissions n
+                LEFT JOIN sales s ON n.sale_id = s.id
+                LEFT JOIN customers c ON s.customer_id = CAST(c.id AS TEXT)
+                {where}
+                ORDER BY n.created_at DESC
+                LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """
+            params.extend([per_page, offset])
+
+            rows = await conn.fetch(query, *params)
+
+            items = []
+            for row in rows:
+                item = row_to_dict(row)
+                # Formata nome do cliente
+                if row['company_name']:
+                    item['customer_name'] = row['company_name']
+                elif row['first_name'] or row['last_name']:
+                    item['customer_name'] = f"{row['first_name'] or ''} {row['last_name'] or ''}".strip()
+                else:
+                    item['customer_name'] = 'Consumidor Final'
+                items.append(item)
+
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": (total + per_page - 1) // per_page if total > 0 else 1
+            }
+        finally:
+            await conn.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao listar NF-e: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
 

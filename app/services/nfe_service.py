@@ -16,11 +16,16 @@ Documentacao SEFAZ: https://www.nfe.fazenda.gov.br/portal/principal.aspx
 import logging
 import hashlib
 import base64
+import tempfile
+import os
+import ssl
+import io
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
 from decimal import Decimal
 from lxml import etree
 from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 from cryptography.hazmat.backends import default_backend
 from cryptography import x509
 from cryptography.fernet import Fernet
@@ -29,6 +34,8 @@ from signxml.algorithms import SignatureMethod, DigestAlgorithm
 import zeep
 from zeep.transports import Transport
 from zeep.wsse.signature import Signature
+import requests
+from requests.adapters import HTTPAdapter
 import asyncpg
 import uuid
 
@@ -794,3 +801,878 @@ async def processar_emissao_nfe(
             'success': False,
             'error': str(e)
         }
+
+
+# =====================================================
+# CLASSE PARA COMUNICACAO SOAP COM SEFAZ
+# =====================================================
+
+class SefazClient:
+    """
+    Cliente para comunicacao SOAP com web services da SEFAZ.
+    Gerencia certificados, sessoes SSL e chamadas aos servicos.
+    """
+
+    def __init__(self, cert_data: bytes, cert_password: str):
+        """
+        Inicializa cliente SEFAZ com certificado.
+
+        Args:
+            cert_data: Bytes do arquivo .pfx/.p12
+            cert_password: Senha do certificado
+        """
+        self._cert_data = cert_data
+        self._cert_password = cert_password
+        self._cert_file = None
+        self._key_file = None
+        self._session = None
+        self._setup_certificate()
+
+    def _setup_certificate(self):
+        """Extrai certificado e chave privada para arquivos temporarios."""
+        try:
+            # Carrega PKCS12
+            private_key, certificate, chain = pkcs12.load_key_and_certificates(
+                self._cert_data,
+                self._cert_password.encode() if self._cert_password else None,
+                default_backend()
+            )
+
+            # Cria arquivos temporarios para cert e key
+            self._cert_file = tempfile.NamedTemporaryFile(
+                mode='wb', suffix='.pem', delete=False
+            )
+            self._key_file = tempfile.NamedTemporaryFile(
+                mode='wb', suffix='.pem', delete=False
+            )
+
+            # Escreve certificado em PEM
+            self._cert_file.write(certificate.public_bytes(Encoding.PEM))
+            self._cert_file.flush()
+
+            # Escreve chave privada em PEM
+            self._key_file.write(private_key.private_bytes(
+                Encoding.PEM,
+                PrivateFormat.TraditionalOpenSSL,
+                NoEncryption()
+            ))
+            self._key_file.flush()
+
+            # Cria sessao requests com certificado
+            self._session = requests.Session()
+            self._session.cert = (self._cert_file.name, self._key_file.name)
+            self._session.verify = True
+
+            logger.info("Certificado SEFAZ configurado com sucesso")
+
+        except Exception as e:
+            logger.error(f"Erro ao configurar certificado SEFAZ: {e}")
+            raise
+
+    def __del__(self):
+        """Limpa arquivos temporarios."""
+        try:
+            if self._cert_file and os.path.exists(self._cert_file.name):
+                os.unlink(self._cert_file.name)
+            if self._key_file and os.path.exists(self._key_file.name):
+                os.unlink(self._key_file.name)
+        except:
+            pass
+
+    def _criar_envelope_soap(self, xml_content: str) -> str:
+        """
+        Cria envelope SOAP para envio ao web service.
+
+        Args:
+            xml_content: Conteudo XML da requisicao
+
+        Returns:
+            Envelope SOAP completo
+        """
+        envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+    <soap12:Header/>
+    <soap12:Body>
+        <nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4">
+            {xml_content}
+        </nfeDadosMsg>
+    </soap12:Body>
+</soap12:Envelope>"""
+        return envelope
+
+    def enviar_lote(self, xml_assinado: str, url: str) -> Dict[str, Any]:
+        """
+        Envia lote de NF-e para autorizacao.
+
+        Args:
+            xml_assinado: XML da NF-e assinado
+            url: URL do web service NfeAutorizacao
+
+        Returns:
+            Dicionario com resposta da SEFAZ
+        """
+        try:
+            # Cria lote de envio
+            lote_id = datetime.now().strftime('%Y%m%d%H%M%S')
+
+            # Monta XML do lote
+            lote_xml = f"""<enviNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+    <idLote>{lote_id}</idLote>
+    <indSinc>1</indSinc>
+    {xml_assinado}
+</enviNFe>"""
+
+            # Cria envelope SOAP
+            envelope = self._criar_envelope_soap(lote_xml)
+
+            # Envia requisicao
+            headers = {
+                'Content-Type': 'application/soap+xml; charset=utf-8',
+                'SOAPAction': 'http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4/nfeAutorizacaoLote'
+            }
+
+            response = self._session.post(
+                url,
+                data=envelope.encode('utf-8'),
+                headers=headers,
+                timeout=60
+            )
+
+            if response.status_code != 200:
+                return {
+                    'success': False,
+                    'cStat': '999',
+                    'xMotivo': f'Erro HTTP: {response.status_code}',
+                    'response': response.text[:500]
+                }
+
+            # Parse da resposta
+            return self._parse_resposta_autorizacao(response.text)
+
+        except requests.exceptions.Timeout:
+            return {
+                'success': False,
+                'cStat': '999',
+                'xMotivo': 'Timeout na comunicacao com SEFAZ'
+            }
+        except requests.exceptions.SSLError as e:
+            return {
+                'success': False,
+                'cStat': '999',
+                'xMotivo': f'Erro SSL: {str(e)}'
+            }
+        except Exception as e:
+            logger.error(f"Erro ao enviar lote SEFAZ: {e}")
+            return {
+                'success': False,
+                'cStat': '999',
+                'xMotivo': str(e)
+            }
+
+    def _parse_resposta_autorizacao(self, xml_response: str) -> Dict[str, Any]:
+        """
+        Parse da resposta de autorizacao da SEFAZ.
+
+        Args:
+            xml_response: XML de resposta
+
+        Returns:
+            Dicionario com dados extraidos
+        """
+        try:
+            # Remove declaracao XML se houver
+            if '<?xml' in xml_response:
+                xml_response = xml_response.split('?>', 1)[1] if '?>' in xml_response else xml_response
+
+            root = etree.fromstring(xml_response.encode('utf-8'))
+
+            # Namespaces
+            ns = {
+                'soap': 'http://www.w3.org/2003/05/soap-envelope',
+                'nfe': 'http://www.portalfiscal.inf.br/nfe'
+            }
+
+            # Busca retorno
+            ret_env = root.find('.//nfe:retEnviNFe', ns)
+            if ret_env is None:
+                # Tenta sem namespace
+                ret_env = root.find('.//{http://www.portalfiscal.inf.br/nfe}retEnviNFe')
+
+            if ret_env is None:
+                return {
+                    'success': False,
+                    'cStat': '999',
+                    'xMotivo': 'Resposta invalida da SEFAZ',
+                    'xml_response': xml_response[:1000]
+                }
+
+            cStat = ret_env.findtext('.//{http://www.portalfiscal.inf.br/nfe}cStat', '')
+            xMotivo = ret_env.findtext('.//{http://www.portalfiscal.inf.br/nfe}xMotivo', '')
+
+            result = {
+                'cStat': cStat,
+                'xMotivo': xMotivo
+            }
+
+            # Verifica se foi autorizado (codigo 104 = lote processado)
+            if cStat == '104':
+                # Busca protocolo
+                prot = ret_env.find('.//{http://www.portalfiscal.inf.br/nfe}protNFe')
+                if prot is not None:
+                    inf_prot = prot.find('.//{http://www.portalfiscal.inf.br/nfe}infProt')
+                    if inf_prot is not None:
+                        prot_cStat = inf_prot.findtext('.//{http://www.portalfiscal.inf.br/nfe}cStat', '')
+                        prot_xMotivo = inf_prot.findtext('.//{http://www.portalfiscal.inf.br/nfe}xMotivo', '')
+                        protocolo = inf_prot.findtext('.//{http://www.portalfiscal.inf.br/nfe}nProt', '')
+                        digest = inf_prot.findtext('.//{http://www.portalfiscal.inf.br/nfe}digVal', '')
+
+                        result['prot_cStat'] = prot_cStat
+                        result['prot_xMotivo'] = prot_xMotivo
+                        result['protocolo'] = protocolo
+                        result['digest_value'] = digest
+
+                        # 100 = Autorizado
+                        if prot_cStat == '100':
+                            result['success'] = True
+                            result['status'] = 'AUTHORIZED'
+                        else:
+                            result['success'] = False
+                            result['status'] = 'REJECTED'
+            else:
+                result['success'] = False
+                result['status'] = 'ERROR'
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Erro ao fazer parse da resposta SEFAZ: {e}")
+            return {
+                'success': False,
+                'cStat': '999',
+                'xMotivo': f'Erro no parse: {str(e)}'
+            }
+
+    def consultar_protocolo(self, chave_acesso: str, url: str, ambiente: int = 2) -> Dict[str, Any]:
+        """
+        Consulta protocolo de NF-e na SEFAZ.
+
+        Args:
+            chave_acesso: Chave de acesso da NF-e (44 digitos)
+            url: URL do web service NfeConsultaProtocolo
+            ambiente: 1=Producao, 2=Homologacao
+
+        Returns:
+            Dicionario com dados do protocolo
+        """
+        try:
+            # Monta XML de consulta
+            cons_xml = f"""<consSitNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+    <tpAmb>{ambiente}</tpAmb>
+    <xServ>CONSULTAR</xServ>
+    <chNFe>{chave_acesso}</chNFe>
+</consSitNFe>"""
+
+            # Cria envelope SOAP
+            envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+    <soap12:Header/>
+    <soap12:Body>
+        <nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeConsultaProtocolo4">
+            {cons_xml}
+        </nfeDadosMsg>
+    </soap12:Body>
+</soap12:Envelope>"""
+
+            headers = {
+                'Content-Type': 'application/soap+xml; charset=utf-8',
+                'SOAPAction': 'http://www.portalfiscal.inf.br/nfe/wsdl/NFeConsultaProtocolo4/nfeConsultaNF'
+            }
+
+            response = self._session.post(
+                url,
+                data=envelope.encode('utf-8'),
+                headers=headers,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                return {
+                    'success': False,
+                    'cStat': '999',
+                    'xMotivo': f'Erro HTTP: {response.status_code}'
+                }
+
+            # Parse simplificado
+            root = etree.fromstring(response.text.encode('utf-8'))
+            cStat = root.findtext('.//{http://www.portalfiscal.inf.br/nfe}cStat', '')
+            xMotivo = root.findtext('.//{http://www.portalfiscal.inf.br/nfe}xMotivo', '')
+            protocolo = root.findtext('.//{http://www.portalfiscal.inf.br/nfe}nProt', '')
+
+            return {
+                'success': cStat == '100',
+                'cStat': cStat,
+                'xMotivo': xMotivo,
+                'protocolo': protocolo
+            }
+
+        except Exception as e:
+            logger.error(f"Erro ao consultar protocolo: {e}")
+            return {
+                'success': False,
+                'cStat': '999',
+                'xMotivo': str(e)
+            }
+
+    def enviar_evento(self, xml_evento: str, url: str) -> Dict[str, Any]:
+        """
+        Envia evento (cancelamento, carta correcao) para SEFAZ.
+
+        Args:
+            xml_evento: XML do evento assinado
+            url: URL do web service RecepcaoEvento
+
+        Returns:
+            Dicionario com resposta
+        """
+        try:
+            # Cria envelope SOAP
+            envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+    <soap12:Header/>
+    <soap12:Body>
+        <nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4">
+            {xml_evento}
+        </nfeDadosMsg>
+    </soap12:Body>
+</soap12:Envelope>"""
+
+            headers = {
+                'Content-Type': 'application/soap+xml; charset=utf-8',
+                'SOAPAction': 'http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4/nfeRecepcaoEvento'
+            }
+
+            response = self._session.post(
+                url,
+                data=envelope.encode('utf-8'),
+                headers=headers,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                return {
+                    'success': False,
+                    'cStat': '999',
+                    'xMotivo': f'Erro HTTP: {response.status_code}'
+                }
+
+            # Parse da resposta
+            root = etree.fromstring(response.text.encode('utf-8'))
+            cStat = root.findtext('.//{http://www.portalfiscal.inf.br/nfe}cStat', '')
+            xMotivo = root.findtext('.//{http://www.portalfiscal.inf.br/nfe}xMotivo', '')
+            protocolo = root.findtext('.//{http://www.portalfiscal.inf.br/nfe}nProt', '')
+
+            # 135 = Evento registrado e vinculado a NF-e
+            # 155 = Cancelamento homologado fora de prazo
+            success = cStat in ['135', '155']
+
+            return {
+                'success': success,
+                'cStat': cStat,
+                'xMotivo': xMotivo,
+                'protocolo': protocolo,
+                'xml_response': response.text
+            }
+
+        except Exception as e:
+            logger.error(f"Erro ao enviar evento: {e}")
+            return {
+                'success': False,
+                'cStat': '999',
+                'xMotivo': str(e)
+            }
+
+
+# =====================================================
+# GERACAO DE DANFE (PDF)
+# =====================================================
+
+class DanfeGenerator:
+    """
+    Gerador de DANFE (Documento Auxiliar da Nota Fiscal Eletronica).
+    Cria PDF seguindo layout oficial da SEFAZ.
+    """
+
+    def __init__(self):
+        """Inicializa gerador DANFE."""
+        # Verifica se reportlab esta disponivel
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.units import mm
+            from reportlab.lib import colors
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            self._reportlab_available = True
+        except ImportError:
+            self._reportlab_available = False
+            logger.warning("ReportLab nao instalado - DANFE sera gerado como texto")
+
+    def gerar_danfe(self, dados_nfe: Dict[str, Any], xml_nfe: str = None) -> bytes:
+        """
+        Gera DANFE em formato PDF.
+
+        Args:
+            dados_nfe: Dicionario com dados da NF-e
+            xml_nfe: XML da NF-e (opcional, para extrair dados)
+
+        Returns:
+            Bytes do arquivo PDF
+        """
+        if self._reportlab_available:
+            return self._gerar_danfe_reportlab(dados_nfe)
+        else:
+            return self._gerar_danfe_simples(dados_nfe)
+
+    def _gerar_danfe_reportlab(self, dados: Dict[str, Any]) -> bytes:
+        """Gera DANFE usando ReportLab."""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import mm
+        from reportlab.lib import colors
+
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+
+        # Margens
+        margin = 10 * mm
+        x = margin
+        y = height - margin
+
+        # === CABECALHO ===
+        # Caixa identificacao
+        c.setStrokeColor(colors.black)
+        c.setLineWidth(0.5)
+        c.rect(x, y - 30*mm, width - 2*margin, 30*mm)
+
+        # Titulo
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x + 5*mm, y - 8*mm, "DANFE")
+        c.setFont("Helvetica", 8)
+        c.drawString(x + 5*mm, y - 13*mm, "Documento Auxiliar da")
+        c.drawString(x + 5*mm, y - 17*mm, "Nota Fiscal Eletronica")
+
+        # Numero e serie
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x + 45*mm, y - 8*mm, f"No. {dados.get('numero_nfe', '000000000')}")
+        c.drawString(x + 45*mm, y - 13*mm, f"Serie: {dados.get('serie', '1')}")
+
+        # Chave de acesso
+        chave = dados.get('chave_acesso', '0' * 44)
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 90*mm, y - 8*mm, "CHAVE DE ACESSO")
+        c.setFont("Helvetica-Bold", 8)
+        # Formata chave em grupos de 4
+        chave_fmt = ' '.join([chave[i:i+4] for i in range(0, 44, 4)])
+        c.drawString(x + 90*mm, y - 13*mm, chave_fmt)
+
+        # Protocolo
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 90*mm, y - 20*mm, "PROTOCOLO DE AUTORIZACAO")
+        c.setFont("Helvetica-Bold", 8)
+        protocolo = dados.get('protocolo', '')
+        data_aut = dados.get('data_autorizacao', '')
+        c.drawString(x + 90*mm, y - 25*mm, f"{protocolo} - {data_aut}")
+
+        y -= 35*mm
+
+        # === EMITENTE ===
+        c.rect(x, y - 25*mm, width - 2*margin, 25*mm)
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 2*mm, y - 4*mm, "EMITENTE")
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x + 2*mm, y - 10*mm, dados.get('emit_nome', '')[:60])
+        c.setFont("Helvetica", 8)
+        c.drawString(x + 2*mm, y - 15*mm, f"CNPJ: {dados.get('emit_cnpj', '')}")
+        c.drawString(x + 60*mm, y - 15*mm, f"IE: {dados.get('emit_ie', '')}")
+        c.drawString(x + 2*mm, y - 20*mm, dados.get('emit_endereco', '')[:80])
+
+        y -= 30*mm
+
+        # === DESTINATARIO ===
+        c.rect(x, y - 20*mm, width - 2*margin, 20*mm)
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 2*mm, y - 4*mm, "DESTINATARIO/REMETENTE")
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x + 2*mm, y - 10*mm, dados.get('dest_nome', '')[:60])
+        c.setFont("Helvetica", 8)
+        cpf_cnpj = dados.get('dest_cpf') or dados.get('dest_cnpj', '')
+        c.drawString(x + 2*mm, y - 15*mm, f"CPF/CNPJ: {cpf_cnpj}")
+        c.drawString(x + 2*mm, y - 20*mm, dados.get('dest_endereco', '')[:80])
+
+        y -= 25*mm
+
+        # === PRODUTOS ===
+        c.rect(x, y - 80*mm, width - 2*margin, 80*mm)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(x + 2*mm, y - 5*mm, "DADOS DOS PRODUTOS/SERVICOS")
+
+        # Cabecalho tabela
+        c.setFont("Helvetica-Bold", 6)
+        col_y = y - 12*mm
+        c.drawString(x + 2*mm, col_y, "CODIGO")
+        c.drawString(x + 25*mm, col_y, "DESCRICAO")
+        c.drawString(x + 100*mm, col_y, "UN")
+        c.drawString(x + 115*mm, col_y, "QTD")
+        c.drawString(x + 135*mm, col_y, "VL.UNIT")
+        c.drawString(x + 160*mm, col_y, "VL.TOTAL")
+
+        c.line(x, col_y - 2*mm, width - margin, col_y - 2*mm)
+
+        # Itens
+        c.setFont("Helvetica", 6)
+        item_y = col_y - 6*mm
+        itens = dados.get('itens', [])
+        for item in itens[:15]:  # Limita 15 itens por pagina
+            c.drawString(x + 2*mm, item_y, str(item.get('codigo', ''))[:12])
+            c.drawString(x + 25*mm, item_y, str(item.get('descricao', ''))[:40])
+            c.drawString(x + 100*mm, item_y, str(item.get('unidade', 'UN')))
+            c.drawString(x + 115*mm, item_y, f"{item.get('quantidade', 0):.2f}")
+            c.drawString(x + 135*mm, item_y, f"{item.get('valor_unitario', 0):.2f}")
+            c.drawString(x + 160*mm, item_y, f"{item.get('valor_total', 0):.2f}")
+            item_y -= 4*mm
+
+        y -= 85*mm
+
+        # === TOTAIS ===
+        c.rect(x, y - 15*mm, width - 2*margin, 15*mm)
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 2*mm, y - 5*mm, "VALOR TOTAL DOS PRODUTOS")
+        c.drawString(x + 50*mm, y - 5*mm, "VALOR DO FRETE")
+        c.drawString(x + 90*mm, y - 5*mm, "VALOR DO DESCONTO")
+        c.drawString(x + 140*mm, y - 5*mm, "VALOR TOTAL DA NOTA")
+
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x + 2*mm, y - 12*mm, f"R$ {dados.get('valor_produtos', 0):.2f}")
+        c.drawString(x + 50*mm, y - 12*mm, f"R$ {dados.get('valor_frete', 0):.2f}")
+        c.drawString(x + 90*mm, y - 12*mm, f"R$ {dados.get('valor_desconto', 0):.2f}")
+        c.drawString(x + 140*mm, y - 12*mm, f"R$ {dados.get('valor_total', 0):.2f}")
+
+        y -= 20*mm
+
+        # === INFORMACOES ADICIONAIS ===
+        c.rect(x, y - 30*mm, width - 2*margin, 30*mm)
+        c.setFont("Helvetica", 7)
+        c.drawString(x + 2*mm, y - 5*mm, "INFORMACOES ADICIONAIS")
+        c.setFont("Helvetica", 6)
+        info = dados.get('informacoes_adicionais', '')
+        # Quebra em linhas
+        for i, linha in enumerate(info[:300].split('\n')[:5]):
+            c.drawString(x + 2*mm, y - 10*mm - (i * 4*mm), linha[:100])
+
+        # Rodape
+        c.setFont("Helvetica", 6)
+        c.drawString(x, 10*mm, f"Emitido em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        c.drawString(width - 80*mm, 10*mm, "DANFE gerado por Sistema Enterprise")
+
+        c.save()
+        buffer.seek(0)
+        return buffer.read()
+
+    def _gerar_danfe_simples(self, dados: Dict[str, Any]) -> bytes:
+        """Gera DANFE simples em texto quando ReportLab nao esta disponivel."""
+        texto = f"""
+================================================================================
+                              DANFE - DOCUMENTO AUXILIAR
+                           NOTA FISCAL ELETRONICA - NF-e
+================================================================================
+
+NUMERO: {dados.get('numero_nfe', '')}                SERIE: {dados.get('serie', '')}
+CHAVE DE ACESSO: {dados.get('chave_acesso', '')}
+PROTOCOLO: {dados.get('protocolo', '')}
+
+--------------------------------------------------------------------------------
+EMITENTE
+--------------------------------------------------------------------------------
+{dados.get('emit_nome', '')}
+CNPJ: {dados.get('emit_cnpj', '')}        IE: {dados.get('emit_ie', '')}
+{dados.get('emit_endereco', '')}
+
+--------------------------------------------------------------------------------
+DESTINATARIO
+--------------------------------------------------------------------------------
+{dados.get('dest_nome', '')}
+CPF/CNPJ: {dados.get('dest_cpf', '') or dados.get('dest_cnpj', '')}
+{dados.get('dest_endereco', '')}
+
+--------------------------------------------------------------------------------
+PRODUTOS
+--------------------------------------------------------------------------------
+"""
+        for item in dados.get('itens', []):
+            texto += f"{item.get('codigo', '')[:15]:<15} {item.get('descricao', '')[:40]:<40} "
+            texto += f"{item.get('quantidade', 0):>8.2f} x {item.get('valor_unitario', 0):>10.2f} = "
+            texto += f"{item.get('valor_total', 0):>12.2f}\n"
+
+        texto += f"""
+--------------------------------------------------------------------------------
+TOTAIS
+--------------------------------------------------------------------------------
+VALOR PRODUTOS: R$ {dados.get('valor_produtos', 0):.2f}
+VALOR FRETE:    R$ {dados.get('valor_frete', 0):.2f}
+VALOR DESCONTO: R$ {dados.get('valor_desconto', 0):.2f}
+VALOR TOTAL:    R$ {dados.get('valor_total', 0):.2f}
+
+================================================================================
+"""
+        return texto.encode('utf-8')
+
+
+# =====================================================
+# FUNCOES DE CANCELAMENTO E CARTA DE CORRECAO
+# =====================================================
+
+def gerar_xml_cancelamento(
+    chave_acesso: str,
+    protocolo_autorizacao: str,
+    justificativa: str,
+    cnpj_emitente: str,
+    ambiente: int = 2
+) -> str:
+    """
+    Gera XML de evento de cancelamento de NF-e.
+
+    Args:
+        chave_acesso: Chave de acesso da NF-e
+        protocolo_autorizacao: Protocolo de autorizacao original
+        justificativa: Motivo do cancelamento (min 15 caracteres)
+        cnpj_emitente: CNPJ do emitente
+        ambiente: 1=Producao, 2=Homologacao
+
+    Returns:
+        XML do evento de cancelamento
+    """
+    # Valida justificativa
+    if len(justificativa) < 15:
+        justificativa = justificativa.ljust(15)
+
+    data_evento = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S-03:00')
+    seq_evento = '1'
+    id_evento = f"ID110111{chave_acesso}{seq_evento.zfill(2)}"
+    cOrgao = chave_acesso[:2]  # Codigo UF
+
+    xml = f"""<envEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">
+    <idLote>{datetime.now().strftime('%Y%m%d%H%M%S')}</idLote>
+    <evento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">
+        <infEvento Id="{id_evento}">
+            <cOrgao>{cOrgao}</cOrgao>
+            <tpAmb>{ambiente}</tpAmb>
+            <CNPJ>{cnpj_emitente}</CNPJ>
+            <chNFe>{chave_acesso}</chNFe>
+            <dhEvento>{data_evento}</dhEvento>
+            <tpEvento>110111</tpEvento>
+            <nSeqEvento>{seq_evento}</nSeqEvento>
+            <verEvento>1.00</verEvento>
+            <detEvento versao="1.00">
+                <descEvento>Cancelamento</descEvento>
+                <nProt>{protocolo_autorizacao}</nProt>
+                <xJust>{justificativa}</xJust>
+            </detEvento>
+        </infEvento>
+    </evento>
+</envEvento>"""
+
+    return xml
+
+
+def gerar_xml_carta_correcao(
+    chave_acesso: str,
+    texto_correcao: str,
+    cnpj_emitente: str,
+    sequencia: int = 1,
+    ambiente: int = 2
+) -> str:
+    """
+    Gera XML de Carta de Correcao (CC-e).
+
+    Args:
+        chave_acesso: Chave de acesso da NF-e
+        texto_correcao: Texto da correcao (min 15, max 1000 caracteres)
+        cnpj_emitente: CNPJ do emitente
+        sequencia: Numero sequencial do evento (1-20)
+        ambiente: 1=Producao, 2=Homologacao
+
+    Returns:
+        XML do evento de carta de correcao
+    """
+    # Valida texto
+    if len(texto_correcao) < 15:
+        texto_correcao = texto_correcao.ljust(15)
+    if len(texto_correcao) > 1000:
+        texto_correcao = texto_correcao[:1000]
+
+    data_evento = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S-03:00')
+    id_evento = f"ID110110{chave_acesso}{str(sequencia).zfill(2)}"
+    cOrgao = chave_acesso[:2]
+
+    condicao_uso = ("A Carta de Correcao e disciplinada pelo paragrafo 1o-A do art. 7o "
+                    "do Convenio S/N, de 15 de dezembro de 1970 e pode ser utilizada para "
+                    "regularizacao de erro ocorrido na emissao de documento fiscal, desde que "
+                    "o erro nao esteja relacionado com: I - as variaveis que determinam o valor "
+                    "do imposto tais como: base de calculo, aliquota, diferenca de preco, "
+                    "quantidade, valor da operacao ou da prestacao; II - a correcao de dados "
+                    "cadastrais que implique mudanca do remetente ou do destinatario; "
+                    "III - a data de emissao ou de saida.")
+
+    xml = f"""<envEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">
+    <idLote>{datetime.now().strftime('%Y%m%d%H%M%S')}</idLote>
+    <evento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">
+        <infEvento Id="{id_evento}">
+            <cOrgao>{cOrgao}</cOrgao>
+            <tpAmb>{ambiente}</tpAmb>
+            <CNPJ>{cnpj_emitente}</CNPJ>
+            <chNFe>{chave_acesso}</chNFe>
+            <dhEvento>{data_evento}</dhEvento>
+            <tpEvento>110110</tpEvento>
+            <nSeqEvento>{sequencia}</nSeqEvento>
+            <verEvento>1.00</verEvento>
+            <detEvento versao="1.00">
+                <descEvento>Carta de Correcao</descEvento>
+                <xCorrecao>{texto_correcao}</xCorrecao>
+                <xCondUso>{condicao_uso}</xCondUso>
+            </detEvento>
+        </infEvento>
+    </evento>
+</envEvento>"""
+
+    return xml
+
+
+# =====================================================
+# FUNCAO PARA PROCESSAR CANCELAMENTO
+# =====================================================
+
+async def processar_cancelamento_nfe(
+    conn: asyncpg.Connection,
+    nfe_id: str,
+    justificativa: str,
+    service: NFeService
+) -> Dict[str, Any]:
+    """
+    Processa cancelamento de NF-e.
+
+    Args:
+        conn: Conexao com banco do tenant
+        nfe_id: ID da emissao
+        justificativa: Motivo do cancelamento
+        service: Instancia do NFeService
+
+    Returns:
+        Resultado do cancelamento
+    """
+    try:
+        # Busca dados da NF-e
+        nfe = await conn.fetchrow(
+            "SELECT * FROM nfe_emissions WHERE id = $1",
+            nfe_id
+        )
+
+        if not nfe:
+            return {'success': False, 'error': 'NF-e nao encontrada'}
+
+        if nfe['status'] != 'AUTHORIZED':
+            return {'success': False, 'error': f'NF-e nao pode ser cancelada. Status: {nfe["status"]}'}
+
+        if not nfe['chave_acesso'] or not nfe['protocolo_autorizacao']:
+            return {'success': False, 'error': 'NF-e sem chave de acesso ou protocolo'}
+
+        # Verifica prazo (24 horas em producao, sem limite em homologacao)
+        if nfe['ambiente'] == 1:  # Producao
+            data_autorizacao = nfe['data_autorizacao']
+            if data_autorizacao:
+                horas = (datetime.now() - data_autorizacao).total_seconds() / 3600
+                if horas > 24:
+                    return {
+                        'success': False,
+                        'error': 'Prazo de 24 horas para cancelamento expirado'
+                    }
+
+        # Busca configuracoes fiscais
+        fiscal = await conn.fetchrow(
+            "SELECT * FROM fiscal_settings WHERE is_active = TRUE LIMIT 1"
+        )
+
+        if not fiscal:
+            return {'success': False, 'error': 'Configuracoes fiscais nao encontradas'}
+
+        # Busca CNPJ da empresa
+        company = await conn.fetchrow("SELECT document FROM companies LIMIT 1")
+        cnpj = (company['document'] or '').replace('.', '').replace('/', '').replace('-', '')
+
+        # Gera XML de cancelamento
+        xml_cancelamento = gerar_xml_cancelamento(
+            chave_acesso=nfe['chave_acesso'],
+            protocolo_autorizacao=nfe['protocolo_autorizacao'],
+            justificativa=justificativa,
+            cnpj_emitente=cnpj,
+            ambiente=nfe['ambiente']
+        )
+
+        # Carrega certificado e assina
+        service.load_certificate(
+            fiscal['certificate_file'],
+            fiscal['certificate_password_encrypted']
+        )
+        xml_assinado = service.assinar_xml(xml_cancelamento)
+
+        # Em homologacao, simula sucesso
+        if nfe['ambiente'] == 2:
+            protocolo_cancel = f"CANC{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+            await conn.execute("""
+                UPDATE nfe_emissions SET
+                    status = 'CANCELLED',
+                    cancelled_at = CURRENT_TIMESTAMP,
+                    motivo_cancelamento = $1,
+                    protocolo_cancelamento = $2,
+                    xml_cancelamento = $3,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $4
+            """, justificativa, protocolo_cancel, xml_assinado, nfe_id)
+
+            return {
+                'success': True,
+                'protocolo': protocolo_cancel,
+                'message': 'NF-e cancelada com sucesso (homologacao)'
+            }
+
+        # Em producao, envia para SEFAZ
+        url = service.get_sefaz_url(fiscal['uf'], 'RecepcaoEvento', nfe['ambiente'])
+        if not url:
+            return {'success': False, 'error': 'URL do servico nao encontrada'}
+
+        # Cria cliente SEFAZ
+        client = SefazClient(
+            fiscal['certificate_file'],
+            service._decrypt_password(fiscal['certificate_password_encrypted'])
+        )
+
+        result = client.enviar_evento(xml_assinado, url)
+
+        if result.get('success'):
+            await conn.execute("""
+                UPDATE nfe_emissions SET
+                    status = 'CANCELLED',
+                    cancelled_at = CURRENT_TIMESTAMP,
+                    motivo_cancelamento = $1,
+                    protocolo_cancelamento = $2,
+                    xml_cancelamento = $3,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $4
+            """, justificativa, result.get('protocolo'), xml_assinado, nfe_id)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Erro ao cancelar NF-e: {e}")
+        return {'success': False, 'error': str(e)}
