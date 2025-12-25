@@ -13,10 +13,11 @@ import json
 import subprocess
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
+import asyncpg
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
@@ -138,8 +139,97 @@ def should_run_backup(schedule: dict, tenant_code: str = "unknown") -> bool:
     return True
 
 
+async def execute_backup_with_asyncpg(tenant: Tenant, backup_path: Path, db_host: str, db_port: int, db_user: str, db_pass: str, db_name: str) -> bool:
+    """Executa backup usando asyncpg (fallback quando pg_dump nao esta disponivel)"""
+    conn = None
+    try:
+        conn = await asyncpg.connect(
+            host=db_host,
+            port=int(db_port),
+            user=db_user,
+            password=db_pass,
+            database=db_name,
+            timeout=30
+        )
+
+        sql_lines = []
+        sql_lines.append(f"-- Backup do banco {db_name}")
+        sql_lines.append(f"-- Gerado em {datetime.now().isoformat()}")
+        sql_lines.append(f"-- Tenant: {tenant.tenant_code}")
+        sql_lines.append(f"-- Metodo: asyncpg (backup agendado)")
+        sql_lines.append("")
+
+        # Lista tabelas
+        tables = await conn.fetch("""
+            SELECT tablename FROM pg_tables
+            WHERE schemaname = 'public'
+            ORDER BY tablename
+        """)
+
+        for table_row in tables:
+            table_name = table_row['tablename']
+
+            # Busca colunas da tabela
+            columns = await conn.fetch("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = $1
+                ORDER BY ordinal_position
+            """, table_name)
+
+            col_names = [c['column_name'] for c in columns]
+
+            # Busca dados
+            rows = await conn.fetch(f'SELECT * FROM "{table_name}"')
+
+            if rows:
+                sql_lines.append(f"-- Dados da tabela {table_name}")
+                for row in rows:
+                    values = []
+                    for col in col_names:
+                        val = row.get(col)
+                        if val is None:
+                            values.append("NULL")
+                        elif isinstance(val, str):
+                            escaped = val.replace("'", "''")
+                            values.append(f"'{escaped}'")
+                        elif isinstance(val, bool):
+                            values.append("TRUE" if val else "FALSE")
+                        elif isinstance(val, (int, float)):
+                            values.append(str(val))
+                        elif isinstance(val, datetime):
+                            values.append(f"'{val.isoformat()}'")
+                        elif isinstance(val, date):
+                            values.append(f"'{val.isoformat()}'")
+                        else:
+                            escaped = str(val).replace("'", "''")
+                            values.append(f"'{escaped}'")
+
+                    cols_str = ', '.join(f'"{c}"' for c in col_names)
+                    vals_str = ', '.join(values)
+                    sql_lines.append(f'INSERT INTO "{table_name}" ({cols_str}) VALUES ({vals_str});')
+
+                sql_lines.append("")
+
+        # Salva arquivo
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(sql_lines))
+
+        logger.info(f"[BACKUP-SCHEDULER] Backup criado via asyncpg ({len(sql_lines)} linhas)")
+        return True
+
+    except Exception as e:
+        logger.error(f"[BACKUP-SCHEDULER] Erro no backup asyncpg: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        if conn:
+            await conn.close()
+
+
 async def execute_backup(tenant: Tenant) -> bool:
-    """Executa backup do tenant usando pg_dump"""
+    """Executa backup do tenant usando pg_dump ou asyncpg como fallback"""
     try:
         tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
 
@@ -155,7 +245,10 @@ async def execute_backup(tenant: Tenant) -> bool:
         db_pass = tenant.database_password
         db_name = tenant.database_name
 
-        # Executa pg_dump
+        logger.info(f"[BACKUP-SCHEDULER] Iniciando backup automatico do tenant {tenant.tenant_code}")
+        logger.debug(f"[BACKUP-SCHEDULER] Conexao: host={db_host}, port={db_port}, db={db_name}")
+
+        # Tenta usar pg_dump primeiro (mais completo), senao usa asyncpg
         env = os.environ.copy()
         env["PGPASSWORD"] = db_pass
 
@@ -171,21 +264,28 @@ async def execute_backup(tenant: Tenant) -> bool:
             "-f", str(backup_path)
         ]
 
-        logger.info(f"[BACKUP-SCHEDULER] Iniciando backup automatico do tenant {tenant.tenant_code}")
-        logger.debug(f"[BACKUP-SCHEDULER] Comando: pg_dump -h {db_host} -p {db_port} -U {db_user} -d {db_name}")
+        try:
+            result = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode != 0:
+                raise Exception(f"pg_dump falhou: {result.stderr}")
+            logger.info(f"[BACKUP-SCHEDULER] Backup criado via pg_dump")
+        except Exception as pg_err:
+            logger.warning(f"[BACKUP-SCHEDULER] pg_dump nao disponivel ({pg_err}), usando asyncpg...")
 
-        result = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+            # Fallback: usa asyncpg para gerar backup SQL
+            success = await execute_backup_with_asyncpg(
+                tenant, backup_path, db_host, db_port, db_user, db_pass, db_name
+            )
+            if not success:
+                return False
 
-        if result.returncode != 0:
-            logger.error(f"[BACKUP-SCHEDULER] Erro no pg_dump para {tenant.tenant_code}: {result.stderr}")
-            return False
-
+        # Verifica se arquivo foi criado
         if not backup_path.exists():
             logger.error(f"[BACKUP-SCHEDULER] Backup nao foi criado para {tenant.tenant_code}")
             return False
