@@ -590,6 +590,164 @@ Tech-EMP Sistema
 
         return self.send_email(to_email, subject, html_content, text_content)
 
+    def send_password_reset_email(
+        self,
+        to_email: str,
+        name: str,
+        reset_url: str
+    ) -> bool:
+        """
+        Envia email de recuperacao de senha com link seguro.
+
+        Args:
+            to_email: Email do usuario
+            name: Nome do usuario
+            reset_url: URL completa para redefinir senha (com token)
+        """
+        subject = "Recuperacao de Senha - Tech-EMP Sistema"
+
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+
+        <!-- HEADER -->
+        <tr>
+            <td style="background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); padding: 40px 30px; text-align: center; border-radius: 12px 12px 0 0;">
+                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: bold;">🔐 Tech-EMP</h1>
+                <p style="margin: 10px 0 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">Recuperacao de Senha</p>
+            </td>
+        </tr>
+
+        <!-- CONTENT -->
+        <tr>
+            <td style="padding: 40px 30px;">
+                <h2 style="margin: 0 0 20px 0; color: #1e293b; font-size: 22px;">Ola, {name}!</h2>
+                <p style="margin: 0 0 20px 0; color: #475569; font-size: 16px; line-height: 1.6;">
+                    Recebemos uma solicitacao para redefinir a senha da sua conta no <strong style="color: #3b82f6;">Tech-EMP Sistema</strong>.
+                </p>
+                <p style="margin: 0 0 30px 0; color: #475569; font-size: 16px; line-height: 1.6;">
+                    Clique no botao abaixo para criar uma nova senha:
+                </p>
+
+                <!-- BUTTON -->
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{reset_url}" style="display: inline-block; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); color: #ffffff; padding: 16px 40px; text-decoration: none; border-radius: 10px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
+                        🔑 REDEFINIR MINHA SENHA
+                    </a>
+                </div>
+
+                <!-- WARNING BOX -->
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: #fef3c7; border-radius: 10px; border: 1px solid #fbbf24; margin: 30px 0;">
+                    <tr>
+                        <td style="padding: 20px;">
+                            <p style="margin: 0 0 10px 0; color: #92400e; font-size: 14px; font-weight: bold;">⚠️ Importante:</p>
+                            <ul style="margin: 0; padding-left: 20px; color: #78350f; font-size: 14px; line-height: 1.8;">
+                                <li>Este link expira em <strong>1 hora</strong></li>
+                                <li>Se voce nao solicitou esta recuperacao, ignore este email</li>
+                                <li>Sua senha atual permanece inalterada ate voce criar uma nova</li>
+                            </ul>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- ALTERNATIVE LINK -->
+                <p style="margin: 20px 0 0 0; color: #64748b; font-size: 13px; line-height: 1.6;">
+                    Se o botao nao funcionar, copie e cole este link no seu navegador:
+                </p>
+                <p style="margin: 10px 0 0 0; word-break: break-all; background: #f1f5f9; padding: 12px; border-radius: 8px; font-size: 12px; color: #3b82f6;">
+                    {reset_url}
+                </p>
+            </td>
+        </tr>
+
+        <!-- SECURITY TIP -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-radius: 10px; border: 1px solid #6ee7b7;">
+                    <tr>
+                        <td style="padding: 20px;">
+                            <p style="margin: 0 0 10px 0; color: #065f46; font-size: 14px; font-weight: bold;">🛡️ Dica de Seguranca</p>
+                            <p style="margin: 0; color: #047857; font-size: 13px; line-height: 1.6;">
+                                Escolha uma senha forte com pelo menos 8 caracteres, incluindo letras maiusculas, minusculas, numeros e simbolos.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+        <!-- SUPPORT -->
+        <tr>
+            <td style="padding: 0 30px 30px 30px; text-align: center;">
+                <p style="margin: 0; color: #64748b; font-size: 14px;">
+                    Precisa de ajuda? Entre em contato conosco:
+                </p>
+                <p style="margin: 10px 0 0 0; color: #1e293b; font-size: 18px; font-weight: bold;">
+                    📱 (35) 9.8858-6400
+                </p>
+            </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+            <td style="background: #1e293b; padding: 25px; text-align: center; border-radius: 0 0 12px 12px;">
+                <p style="margin: 0 0 10px 0; color: #3b82f6; font-size: 16px; font-weight: bold;">Tech-EMP Sistema</p>
+                <p style="margin: 0 0 10px 0; color: #64748b; font-size: 12px;">
+                    Este e-mail foi enviado automaticamente. Por favor, nao responda.
+                </p>
+                <p style="margin: 0; color: #475569; font-size: 11px;">
+                    &copy; 2024 Tech-EMP. Todos os direitos reservados.
+                </p>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+"""
+
+        text_content = f"""
+============================================
+🔐 RECUPERACAO DE SENHA - TECH-EMP
+============================================
+
+Ola, {name}!
+
+Recebemos uma solicitacao para redefinir a senha da sua conta no Tech-EMP Sistema.
+
+Para criar uma nova senha, acesse o link abaixo:
+
+{reset_url}
+
+--------------------------------------------
+⚠️ IMPORTANTE:
+--------------------------------------------
+• Este link expira em 1 hora
+• Se voce nao solicitou esta recuperacao, ignore este email
+• Sua senha atual permanece inalterada ate voce criar uma nova
+
+--------------------------------------------
+🛡️ DICA DE SEGURANCA:
+--------------------------------------------
+Escolha uma senha forte com pelo menos 8 caracteres, incluindo letras maiusculas, minusculas, numeros e simbolos.
+
+--------------------------------------------
+📞 PRECISA DE AJUDA?
+--------------------------------------------
+Entre em contato: (35) 9.8858-6400
+
+--------------------------------------------
+Tech-EMP Sistema
+© 2024 Tech-EMP. Todos os direitos reservados.
+"""
+
+        return self.send_email(to_email, subject, html_content, text_content)
+
     def send_trial_expiring_email(
         self,
         to_email: str,

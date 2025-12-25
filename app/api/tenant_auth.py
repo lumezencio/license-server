@@ -1,6 +1,7 @@
 """
 License Server - Tenant Authentication API
 Sistema de login unico multi-tenant
+Inclui recuperacao de senha por email
 """
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -10,10 +11,13 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 import hashlib
 import asyncpg
+import secrets
+import uuid
 
 from app.database import get_db
 from app.models import Tenant, TenantStatus, License, LicenseStatus
 from app.core import settings, create_access_token
+from app.core.email import email_service
 import logging
 
 # Rate limiting
@@ -599,4 +603,366 @@ async def check_email_tenant(
         "tenant_name": tenant.trade_name or tenant.name,
         "status": tenant.status,
         "is_trial": tenant.is_trial
+    }
+
+
+# =====================================================
+# RECUPERACAO DE SENHA
+# =====================================================
+
+class ForgotPasswordRequest(BaseModel):
+    """Request para solicitar recuperacao de senha"""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Request para resetar senha com token"""
+    token: str
+    new_password: str
+
+
+def generate_reset_token() -> str:
+    """
+    Gera um token seguro para recuperacao de senha.
+    Usa secrets.token_urlsafe para gerar 32 bytes de entropia.
+    """
+    return secrets.token_urlsafe(32)
+
+
+async def find_user_tenant(email: str, db: AsyncSession) -> tuple[Optional[object], Optional[dict]]:
+    """
+    Encontra o tenant e usuario pelo email.
+    Busca primeiro pelo email principal do tenant, depois em todos os tenants ativos.
+
+    Returns:
+        (tenant, user_info) ou (None, None) se nao encontrado
+    """
+    email_lower = email.lower()
+
+    # 1. Busca tenant pelo email principal
+    result = await db.execute(
+        select(Tenant).where(Tenant.email == email_lower)
+    )
+    tenant = result.scalar_one_or_none()
+
+    if tenant and tenant.provisioned_at:
+        # Verifica se usuario existe no banco do tenant
+        try:
+            conn = await asyncpg.connect(
+                host=tenant.database_host or settings.POSTGRES_HOST,
+                port=tenant.database_port or settings.POSTGRES_PORT,
+                user=tenant.database_user,
+                password=tenant.database_password,
+                database=tenant.database_name
+            )
+            try:
+                user = await conn.fetchrow("""
+                    SELECT id, email, full_name
+                    FROM users
+                    WHERE email = $1 AND (deleted_at IS NULL OR deleted_at > CURRENT_TIMESTAMP)
+                """, email_lower)
+                if user:
+                    return tenant, {"id": str(user['id']), "email": user['email'], "name": user['full_name']}
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error(f"Erro ao buscar usuario no tenant principal: {e}")
+
+    # 2. Busca usuario em todos os tenants ativos
+    tenants_result = await db.execute(
+        select(Tenant).where(
+            Tenant.provisioned_at.isnot(None),
+            Tenant.status.in_([TenantStatus.ACTIVE.value, TenantStatus.TRIAL.value])
+        )
+    )
+    active_tenants = tenants_result.scalars().all()
+
+    for t in active_tenants:
+        try:
+            conn = await asyncpg.connect(
+                host=t.database_host or settings.POSTGRES_HOST,
+                port=t.database_port or settings.POSTGRES_PORT,
+                user=t.database_user,
+                password=t.database_password,
+                database=t.database_name
+            )
+            try:
+                user = await conn.fetchrow("""
+                    SELECT id, email, full_name
+                    FROM users
+                    WHERE email = $1 AND (deleted_at IS NULL OR deleted_at > CURRENT_TIMESTAMP)
+                """, email_lower)
+                if user:
+                    return t, {"id": str(user['id']), "email": user['email'], "name": user['full_name']}
+            finally:
+                await conn.close()
+        except Exception:
+            continue
+
+    return None, None
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/minute")
+async def forgot_password(
+    request_data: ForgotPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Solicita recuperacao de senha.
+
+    1. Busca usuario pelo email em todos os tenants
+    2. Gera token seguro com expiracao de 1 hora
+    3. Salva token no banco do tenant
+    4. Envia email com link de recuperacao
+
+    SEGURANCA:
+    - Rate limit de 3 requisicoes por minuto
+    - Resposta generica para evitar enumeracao de emails
+    - Token expira em 1 hora
+    - Token e invalidado apos uso
+    """
+    email = request_data.email.lower()
+
+    # Resposta generica para evitar enumeracao de usuarios
+    generic_response = {
+        "success": True,
+        "message": "Se o email estiver cadastrado, voce recebera um link para recuperacao de senha."
+    }
+
+    # Busca tenant e usuario
+    tenant, user_info = await find_user_tenant(email, db)
+
+    if not tenant or not user_info:
+        # Retorna mesma resposta para evitar enumeracao
+        logger.info(f"Tentativa de recuperacao de senha para email nao encontrado: {email}")
+        return generic_response
+
+    # Gera token seguro
+    reset_token = generate_reset_token()
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+
+    # Salva token no banco do tenant
+    try:
+        conn = await asyncpg.connect(
+            host=tenant.database_host or settings.POSTGRES_HOST,
+            port=tenant.database_port or settings.POSTGRES_PORT,
+            user=tenant.database_user,
+            password=tenant.database_password,
+            database=tenant.database_name
+        )
+        try:
+            await conn.execute("""
+                UPDATE users
+                SET reset_token = $1, reset_token_expires_at = $2, updated_at = $3
+                WHERE email = $4
+            """, reset_token, expires_at, datetime.utcnow(), email)
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao salvar token de recuperacao: {e}")
+        return generic_response
+
+    # Monta URL de recuperacao
+    # Em producao: https://www.tech-emp.com/reset-password?token=XXX
+    # Em desenvolvimento: http://localhost:5173/reset-password?token=XXX
+    base_url = settings.APP_URL or "https://www.tech-emp.com"
+    reset_url = f"{base_url}/reset-password?token={reset_token}"
+
+    # Envia email
+    try:
+        email_sent = email_service.send_password_reset_email(
+            to_email=email,
+            name=user_info.get('name') or email.split('@')[0],
+            reset_url=reset_url
+        )
+        if not email_sent:
+            logger.warning(f"Falha ao enviar email de recuperacao para: {email}")
+    except Exception as e:
+        logger.error(f"Erro ao enviar email de recuperacao: {e}")
+
+    logger.info(f"Token de recuperacao gerado para: {email}")
+    return generic_response
+
+
+@router.post("/reset-password")
+@limiter.limit("5/minute")
+async def reset_password(
+    request_data: ResetPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Redefine a senha usando o token de recuperacao.
+
+    1. Busca usuario pelo token em todos os tenants
+    2. Verifica se token nao expirou
+    3. Atualiza senha e invalida token
+
+    SEGURANCA:
+    - Rate limit de 5 requisicoes por minuto
+    - Token e invalidado apos uso (one-time use)
+    - Senha deve ter minimo 6 caracteres
+    """
+    token = request_data.token
+    new_password = request_data.new_password
+
+    # Valida nova senha
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A nova senha deve ter no minimo 6 caracteres"
+        )
+
+    # Busca usuario pelo token em todos os tenants
+    found_tenant = None
+    found_user_email = None
+
+    tenants_result = await db.execute(
+        select(Tenant).where(
+            Tenant.provisioned_at.isnot(None),
+            Tenant.status.in_([TenantStatus.ACTIVE.value, TenantStatus.TRIAL.value])
+        )
+    )
+    active_tenants = tenants_result.scalars().all()
+
+    for t in active_tenants:
+        try:
+            conn = await asyncpg.connect(
+                host=t.database_host or settings.POSTGRES_HOST,
+                port=t.database_port or settings.POSTGRES_PORT,
+                user=t.database_user,
+                password=t.database_password,
+                database=t.database_name
+            )
+            try:
+                user = await conn.fetchrow("""
+                    SELECT email, reset_token_expires_at
+                    FROM users
+                    WHERE reset_token = $1 AND (deleted_at IS NULL OR deleted_at > CURRENT_TIMESTAMP)
+                """, token)
+                if user:
+                    found_tenant = t
+                    found_user_email = user['email']
+                    expires_at = user['reset_token_expires_at']
+                    break
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error(f"Erro ao buscar token no tenant {t.tenant_code}: {e}")
+            continue
+
+    if not found_tenant or not found_user_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token invalido ou expirado. Solicite um novo link de recuperacao."
+        )
+
+    # Verifica expiracao
+    if expires_at and datetime.utcnow() > expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token expirado. Solicite um novo link de recuperacao."
+        )
+
+    # Atualiza senha e invalida token
+    try:
+        conn = await asyncpg.connect(
+            host=found_tenant.database_host or settings.POSTGRES_HOST,
+            port=found_tenant.database_port or settings.POSTGRES_PORT,
+            user=found_tenant.database_user,
+            password=found_tenant.database_password,
+            database=found_tenant.database_name
+        )
+        try:
+            # Hash da nova senha (SHA256 para novos tenants)
+            new_hash = hashlib.sha256(new_password.encode()).hexdigest()
+
+            await conn.execute("""
+                UPDATE users
+                SET hashed_password = $1,
+                    reset_token = NULL,
+                    reset_token_expires_at = NULL,
+                    must_change_password = FALSE,
+                    updated_at = $2
+                WHERE email = $3
+            """, new_hash, datetime.utcnow(), found_user_email)
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao atualizar senha: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro ao atualizar senha. Tente novamente."
+        )
+
+    # Marca que senha foi trocada no tenant (se aplicavel)
+    if not found_tenant.password_changed:
+        found_tenant.password_changed = True
+        found_tenant.activated_at = datetime.utcnow()
+        await db.commit()
+
+    logger.info(f"Senha redefinida com sucesso para: {found_user_email}")
+
+    return {
+        "success": True,
+        "message": "Senha redefinida com sucesso! Voce ja pode fazer login."
+    }
+
+
+@router.get("/verify-reset-token/{token}")
+async def verify_reset_token(
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Verifica se um token de recuperacao e valido.
+    Usado para validar o token antes de mostrar o formulario de nova senha.
+    """
+    # Busca usuario pelo token em todos os tenants
+    tenants_result = await db.execute(
+        select(Tenant).where(
+            Tenant.provisioned_at.isnot(None),
+            Tenant.status.in_([TenantStatus.ACTIVE.value, TenantStatus.TRIAL.value])
+        )
+    )
+    active_tenants = tenants_result.scalars().all()
+
+    for t in active_tenants:
+        try:
+            conn = await asyncpg.connect(
+                host=t.database_host or settings.POSTGRES_HOST,
+                port=t.database_port or settings.POSTGRES_PORT,
+                user=t.database_user,
+                password=t.database_password,
+                database=t.database_name
+            )
+            try:
+                user = await conn.fetchrow("""
+                    SELECT email, reset_token_expires_at
+                    FROM users
+                    WHERE reset_token = $1 AND (deleted_at IS NULL OR deleted_at > CURRENT_TIMESTAMP)
+                """, token)
+                if user:
+                    # Verifica expiracao
+                    expires_at = user['reset_token_expires_at']
+                    if expires_at and datetime.utcnow() > expires_at:
+                        return {
+                            "valid": False,
+                            "message": "Token expirado. Solicite um novo link de recuperacao."
+                        }
+                    return {
+                        "valid": True,
+                        "email": user['email'],
+                        "message": "Token valido"
+                    }
+            finally:
+                await conn.close()
+        except Exception:
+            continue
+
+    return {
+        "valid": False,
+        "message": "Token invalido ou expirado."
     }
