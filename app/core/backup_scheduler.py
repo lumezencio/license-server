@@ -163,8 +163,9 @@ async def execute_backup_with_asyncpg(tenant: Tenant, backup_path: Path, db_host
         )
 
         sql_lines = []
+        now_brazil = datetime.now(BRAZIL_TZ)
         sql_lines.append(f"-- Backup do banco {db_name}")
-        sql_lines.append(f"-- Gerado em {datetime.now().isoformat()}")
+        sql_lines.append(f"-- Gerado em {now_brazil.strftime('%Y-%m-%d %H:%M:%S')} (Horario de Brasilia)")
         sql_lines.append(f"-- Tenant: {tenant.tenant_code}")
         sql_lines.append(f"-- Metodo: asyncpg (backup agendado)")
         sql_lines.append("")
@@ -243,8 +244,10 @@ async def execute_backup(tenant: Tenant) -> bool:
     try:
         tenant_backup_dir = get_tenant_backup_dir(tenant.tenant_code)
 
-        # Nome do arquivo com timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Nome do arquivo com timestamp no fuso horario do Brasil
+        # Assim o arquivo reflete o horario local do usuario
+        now_brazil = datetime.now(BRAZIL_TZ)
+        timestamp = now_brazil.strftime("%Y%m%d_%H%M%S")
         backup_filename = f"backup_{tenant.tenant_code}_{timestamp}.sql"
         backup_path = tenant_backup_dir / backup_filename
 
