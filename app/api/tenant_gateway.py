@@ -991,6 +991,99 @@ async def list_products(
         await conn.close()
 
 
+@router.get("/products/stats/dashboard")
+async def get_products_stats_dashboard(
+    tenant_data: tuple = Depends(get_tenant_from_token)
+):
+    """Retorna estatisticas de produtos para o dashboard"""
+    tenant, user = tenant_data
+    conn = await get_tenant_connection(tenant)
+
+    try:
+        # Total de produtos (item_type != 'SERVICE')
+        total_products = await conn.fetchval("""
+            SELECT COUNT(*) FROM products WHERE UPPER(COALESCE(item_type, 'PRODUCT')) != 'SERVICE'
+        """) or 0
+
+        # Total de serviços (item_type = 'SERVICE')
+        total_services = await conn.fetchval("""
+            SELECT COUNT(*) FROM products WHERE UPPER(COALESCE(item_type, '')) = 'SERVICE'
+        """) or 0
+
+        # Produtos ativos (status = 'ACTIVE' e item_type != 'SERVICE')
+        active_products = await conn.fetchval("""
+            SELECT COUNT(*) FROM products
+            WHERE UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
+            AND UPPER(COALESCE(item_type, 'PRODUCT')) != 'SERVICE'
+        """) or 0
+
+        # Serviços ativos
+        active_services = await conn.fetchval("""
+            SELECT COUNT(*) FROM products
+            WHERE UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
+            AND UPPER(COALESCE(item_type, '')) = 'SERVICE'
+        """) or 0
+
+        # Produtos com estoque baixo (usando current_stock e minimum_stock)
+        low_stock_items = await conn.fetchval("""
+            SELECT COUNT(*) FROM products
+            WHERE COALESCE(current_stock, 0) <= COALESCE(minimum_stock, 0)
+            AND COALESCE(minimum_stock, 0) > 0
+            AND UPPER(COALESCE(item_type, 'PRODUCT')) != 'SERVICE'
+        """) or 0
+
+        # Valor total do estoque (usando current_stock e sale_price)
+        total_stock_value = await conn.fetchval("""
+            SELECT COALESCE(SUM(COALESCE(current_stock, 0) * COALESCE(sale_price, 0)), 0) FROM products
+            WHERE UPPER(COALESCE(item_type, 'PRODUCT')) != 'SERVICE'
+        """) or 0
+
+        # Markup médio
+        average_markup = await conn.fetchval("""
+            SELECT COALESCE(AVG(COALESCE(markup_percentage, 0)), 0) FROM products
+            WHERE UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
+            AND COALESCE(markup_percentage, 0) > 0
+        """) or 0
+
+        # Produtos sem NCM
+        items_without_ncm = await conn.fetchval("""
+            SELECT COUNT(*) FROM products
+            WHERE (ncm IS NULL OR TRIM(COALESCE(ncm, '')) = '')
+            AND UPPER(COALESCE(item_type, 'PRODUCT')) != 'SERVICE'
+        """) or 0
+
+        # Produtos com informações fiscais incompletas
+        items_missing_fiscal_info = await conn.fetchval("""
+            SELECT COUNT(*) FROM products
+            WHERE UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
+            AND UPPER(COALESCE(item_type, 'PRODUCT')) != 'SERVICE'
+            AND (
+                (ncm IS NULL OR TRIM(COALESCE(ncm, '')) = '')
+                OR (cfop_venda_estadual IS NULL OR TRIM(COALESCE(cfop_venda_estadual, '')) = '')
+            )
+        """) or 0
+
+        return {
+            "total_products": total_products,
+            "total_services": total_services,
+            "active_products": active_products,
+            "active_services": active_services,
+            "inactive_products": total_products - active_products,
+            "inactive_services": total_services - active_services,
+            "low_stock_items": low_stock_items,
+            "low_stock_products": low_stock_items,
+            "total_stock_value": float(total_stock_value),
+            "average_markup": float(average_markup),
+            "items_without_ncm": items_without_ncm,
+            "items_missing_fiscal_info": items_missing_fiscal_info
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar estatísticas de produtos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()
+
+
 @router.get("/products/{product_id}")
 async def get_product(
     product_id: str,
@@ -5147,17 +5240,21 @@ async def get_legal_calculation(
 
         # Converte row para dict
         result = row_to_dict(row)
+        logger.info(f"GET legal-calculations/{calc_id}: resultado bruto tem metadata_calculo? {result.get('metadata_calculo') is not None}")
 
         # Extrai metadata_calculo (JSONB) e mescla com o resultado
         # O frontend espera os dados diretamente (nome, debitos, etc)
         # Tenta primeiro metadata_calculo (novo), depois result_data (legado)
         metadata = result.get("metadata_calculo") or result.get("result_data")
+        logger.info(f"GET legal-calculations/{calc_id}: metadata type={type(metadata)}")
+
         if metadata:
             # Se for string, faz parse
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
             # Mescla os dados do metadata no resultado
             result.update(metadata)
+            logger.info(f"GET legal-calculations/{calc_id}: apos merge, debitos={len(result.get('debitos', []))}, creditos={len(result.get('creditos', []))}, honorarios={len(result.get('honorarios', []))}")
 
         # Busca dados do cliente se houver customer_id
         customer_id = result.get("customer_id")
@@ -7255,34 +7352,6 @@ async def get_reports_registry(
                 "active": active_count,
                 "inactive": inactive_count
             }
-        }
-    finally:
-        await conn.close()
-
-
-# === ENDPOINTS - PRODUCTS STATS ===
-
-@router.get("/products/stats/dashboard")
-async def get_products_stats(
-    tenant_data: tuple = Depends(get_tenant_from_token)
-):
-    """Retorna estatisticas de produtos"""
-    tenant, user = tenant_data
-    conn = await get_tenant_connection(tenant)
-
-    try:
-        total = await conn.fetchval("SELECT COUNT(*) FROM products") or 0
-        active = await conn.fetchval("SELECT COUNT(*) FROM products WHERE is_active = true") or 0
-        low_stock = await conn.fetchval("""
-            SELECT COUNT(*) FROM products WHERE stock_quantity <= min_stock AND min_stock > 0
-        """) or 0
-
-        return {
-            "total_products": total,
-            "active_products": active,
-            "inactive_products": total - active,
-            "low_stock_products": low_stock,
-            "total_stock_value": 0.0
         }
     finally:
         await conn.close()
