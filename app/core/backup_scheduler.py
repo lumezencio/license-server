@@ -13,12 +13,16 @@ import json
 import subprocess
 import os
 import logging
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from sqlalchemy import select
+
+# Fuso horario padrao do Brasil (UTC-3)
+BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 
 from app.database import AsyncSessionLocal
 from app.models import Tenant, TenantStatus
@@ -77,22 +81,25 @@ def should_run_backup(schedule: dict, tenant_code: str = "unknown") -> bool:
     """
     Verifica se o backup deve ser executado agora.
     Retorna True se todas as condicoes forem atendidas.
+    USA O FUSO HORARIO DO BRASIL (America/Sao_Paulo) para comparar com o horario agendado.
     """
     # Verifica se agendamento esta habilitado
     if not schedule.get("enabled"):
         logger.debug(f"[BACKUP-SCHEDULER] {tenant_code}: Agendamento desabilitado")
         return False
 
-    now = datetime.now()
+    # Usa o fuso horario do Brasil para verificar o horario
+    # O tenant agenda no horario local dele (Brasil), entao precisamos comparar com horario BR
+    now_brazil = datetime.now(BRAZIL_TZ)
     time_str = schedule.get("time", "02:00")
     time_parts = time_str.split(":")
     scheduled_hour = int(time_parts[0])
     scheduled_minute = int(time_parts[1]) if len(time_parts) > 1 else 0
 
-    current_hour = now.hour
-    current_minute = now.minute
+    current_hour = now_brazil.hour
+    current_minute = now_brazil.minute
 
-    logger.debug(f"[BACKUP-SCHEDULER] {tenant_code}: Hora atual={current_hour}:{current_minute:02d}, "
+    logger.debug(f"[BACKUP-SCHEDULER] {tenant_code}: Hora Brasil={current_hour}:{current_minute:02d}, "
                 f"Agendado={scheduled_hour}:{scheduled_minute:02d}")
 
     # Verifica se estamos no horario certo (com tolerancia de 2 minutos)
@@ -109,7 +116,7 @@ def should_run_backup(schedule: dict, tenant_code: str = "unknown") -> bool:
 
     if frequency == "weekly":
         day_of_week = schedule.get("dayOfWeek", 1)
-        current_weekday = now.weekday()
+        current_weekday = now_brazil.weekday()
         logger.debug(f"[BACKUP-SCHEDULER] {tenant_code}: Dia da semana atual={current_weekday}, "
                     f"Configurado={day_of_week}")
         if current_weekday != day_of_week:
@@ -117,19 +124,22 @@ def should_run_backup(schedule: dict, tenant_code: str = "unknown") -> bool:
 
     elif frequency == "monthly":
         day_of_month = schedule.get("dayOfMonth", 1)
-        current_day = now.day
+        current_day = now_brazil.day
         logger.debug(f"[BACKUP-SCHEDULER] {tenant_code}: Dia do mes atual={current_day}, "
                     f"Configurado={day_of_month}")
         if current_day != day_of_month:
             return False
 
-    # Verifica se ja executou hoje
+    # Verifica se ja executou hoje (usando data do Brasil)
     last_run = schedule.get("last_run")
     if last_run:
         try:
             last_run_dt = datetime.fromisoformat(last_run)
+            # Converte para fuso horario do Brasil para comparar datas
+            if last_run_dt.tzinfo is None:
+                last_run_dt = last_run_dt.replace(tzinfo=BRAZIL_TZ)
             last_run_date = last_run_dt.date()
-            if last_run_date == now.date():
+            if last_run_date == now_brazil.date():
                 logger.debug(f"[BACKUP-SCHEDULER] {tenant_code}: Ja executou hoje ({last_run})")
                 return False
         except Exception as e:
