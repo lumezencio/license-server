@@ -7691,11 +7691,30 @@ async def list_backups(
         for backup_file in sorted(tenant_backup_dir.glob("*.sql"), key=lambda x: x.stat().st_mtime, reverse=True):
             stat = backup_file.stat()
             total_size += stat.st_size
+
+            # Extrai timestamp do nome do arquivo (formato: backup_XXXXX_YYYYMMDD_HHMMSS.sql)
+            # Isso reflete o horario Brasil em que o backup foi criado
+            filename = backup_file.stem  # backup_29235654000186_20251225_094356
+            try:
+                # Pega as ultimas duas partes: YYYYMMDD e HHMMSS
+                parts = filename.split('_')
+                if len(parts) >= 3:
+                    date_part = parts[-2]  # YYYYMMDD
+                    time_part = parts[-1]  # HHMMSS
+                    # Formata como datetime
+                    created_dt = datetime.strptime(f"{date_part}_{time_part}", "%Y%m%d_%H%M%S")
+                    created_at = created_dt.isoformat()
+                else:
+                    created_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
+            except:
+                # Fallback para data de modificacao se nao conseguir parsear
+                created_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
+
             backups.append({
                 "id": backup_file.stem,
                 "filename": backup_file.name,
                 "size": stat.st_size,
-                "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                "created_at": created_at
             })
 
         # Carrega configuracao de agendamento

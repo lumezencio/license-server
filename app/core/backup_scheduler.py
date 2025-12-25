@@ -346,15 +346,17 @@ async def process_tenant_backup(tenant: Tenant):
         schedule = load_schedule(tenant.tenant_code)
 
         if should_run_backup(schedule, tenant.tenant_code):
+            # Marca imediatamente como executado para evitar duplicatas
+            # (quando ha multiplos workers rodando)
+            now_brazil = datetime.now(BRAZIL_TZ)
+            schedule["last_run"] = now_brazil.isoformat()
+            save_schedule(tenant.tenant_code, schedule)
+
             logger.info(f"[BACKUP-SCHEDULER] Executando backup agendado de {tenant.tenant_code}")
 
             success = await execute_backup(tenant)
 
             if success:
-                # Atualiza last_run
-                schedule["last_run"] = datetime.now().isoformat()
-                save_schedule(tenant.tenant_code, schedule)
-
                 # Limpa backups antigos
                 retention_days = schedule.get("retentionDays", 30)
                 cleanup_old_backups(tenant.tenant_code, retention_days)
