@@ -50,6 +50,15 @@ class EmailService:
     ) -> bool:
         """Envia email via Resend API (HTTP)"""
         try:
+            # Usa domínio verificado ou fallback para onboarding@resend.dev
+            # Para domínio próprio, verificar em https://resend.com/domains
+            from_email = self.from_email
+            if not self.from_email.endswith('@resend.dev'):
+                # Tenta usar domínio próprio, se falhar usa resend.dev
+                from_email = f"Tech-EMP <onboarding@resend.dev>"
+            else:
+                from_email = f"{self.from_name} <{self.from_email}>"
+
             response = httpx.post(
                 "https://api.resend.com/emails",
                 headers={
@@ -57,11 +66,12 @@ class EmailService:
                     "Content-Type": "application/json"
                 },
                 json={
-                    "from": f"{self.from_name} <{self.from_email}>",
+                    "from": from_email,
                     "to": [to_email],
                     "subject": subject,
                     "html": html_content,
-                    "text": text_content or ""
+                    "text": text_content or "",
+                    "reply_to": self.from_email  # Reply vai para o email real
                 },
                 timeout=30.0
             )
@@ -125,14 +135,14 @@ class EmailService:
             part2 = MIMEText(html_content, "html", "utf-8")
             message.attach(part2)
 
-            # Envia email
+            # Envia email com timeout de 30 segundos
             if self.use_ssl:
                 context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(self.host, self.port, context=context) as server:
+                with smtplib.SMTP_SSL(self.host, self.port, context=context, timeout=30) as server:
                     server.login(self.user, self.password)
                     server.sendmail(self.from_email, to_email, message.as_string())
             else:
-                with smtplib.SMTP(self.host, self.port) as server:
+                with smtplib.SMTP(self.host, self.port, timeout=30) as server:
                     if self.use_tls:
                         server.starttls()
                     server.login(self.user, self.password)

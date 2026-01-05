@@ -1,0 +1,37 @@
+# License Server - Docker Compose (Development with PostgreSQL)
+version: '3.8'
+
+services:
+  # PostgreSQL para desenvolvimento local
+  license-db-dev:
+    image: postgres:15-alpine
+    container_name: license-db-dev
+    ports:
+      - "5433:5432"  # Porta externa 5433 para nao conflitar com PostgreSQL local
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=license_server
+    volumes:
+      - license-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  license-db-data:
+
+# Para iniciar apenas o PostgreSQL:
+# docker-compose -f docker-compose.dev.yml up -d license-db-dev
+#
+# Para verificar se esta rodando:
+# docker ps | grep license-db-dev
+#
+# Para conectar:
+# docker exec -it license-db-dev psql -U postgres -d license_server
+#
+# NOTA: Porta externa 5433 para evitar conflito com PostgreSQL local (Windows)
+# O license-server .env deve usar POSTGRES_PORT=5433 para desenvolvimento

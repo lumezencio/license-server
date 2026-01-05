@@ -1576,12 +1576,419 @@ CREATE INDEX IF NOT EXISTS idx_access_log_created ON access_log(created_at);
 """
 
 # =====================================================
+# DIARIO PESSOAL - SISTEMA DE DIÁRIO PESSOAL
+# =====================================================
+DIARIO_SCHEMA_SQL = """
+-- =====================================================
+-- TIPOS ENUM - DIARIO PESSOAL
+-- =====================================================
+DO $$ BEGIN
+    CREATE TYPE mood_type AS ENUM ('happy', 'sad', 'neutral', 'anxious', 'excited', 'tired', 'angry', 'grateful', 'calm', 'stressed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE weather_type AS ENUM ('sunny', 'cloudy', 'rainy', 'snowy', 'windy', 'stormy', 'foggy');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE export_format AS ENUM ('pdf', 'txt', 'json', 'markdown');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- =====================================================
+-- TABELA DE USUÁRIOS (USERS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Dados de login
+    email VARCHAR(255) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL,
+    -- Dados pessoais
+    full_name VARCHAR(255) NOT NULL,
+    avatar_url VARCHAR(500),
+    -- Permissões (necessário para compatibilidade com tenant_auth)
+    role VARCHAR(50) DEFAULT 'user',
+    -- Preferências
+    timezone VARCHAR(50) DEFAULT 'America/Sao_Paulo',
+    language VARCHAR(10) DEFAULT 'pt-BR',
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    is_verified BOOLEAN DEFAULT FALSE NOT NULL,
+    -- Tokens
+    reset_token VARCHAR(255),
+    reset_token_expires_at TIMESTAMP,
+    verification_token VARCHAR(255),
+    verification_token_expires_at TIMESTAMP,
+    -- Login tracking
+    failed_login_attempts INTEGER DEFAULT 0,
+    locked_until TIMESTAMP,
+    last_login_at TIMESTAMP,
+    last_login_ip VARCHAR(50),
+    -- Flag para trocar senha
+    must_change_password BOOLEAN DEFAULT TRUE,
+    -- Soft delete (necessário para compatibilidade com tenant_auth)
+    deleted_at TIMESTAMP
+);
+
+-- =====================================================
+-- ENTRADAS DO DIÁRIO (DIARY_ENTRIES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS diary_entries (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Conteúdo
+    title VARCHAR(255),
+    content TEXT NOT NULL,
+    content_html TEXT,
+    summary VARCHAR(500),
+    -- Humor e bem-estar
+    mood mood_type DEFAULT 'neutral',
+    mood_score INTEGER CHECK (mood_score >= 1 AND mood_score <= 10),
+    energy_level INTEGER CHECK (energy_level >= 1 AND energy_level <= 10),
+    -- Contexto
+    weather weather_type,
+    location VARCHAR(255),
+    location_lat DECIMAL(10,8),
+    location_lng DECIMAL(11,8),
+    -- Organização
+    is_favorite BOOLEAN DEFAULT FALSE,
+    is_private BOOLEAN DEFAULT TRUE,
+    is_pinned BOOLEAN DEFAULT FALSE,
+    -- Métricas
+    word_count INTEGER DEFAULT 0,
+    reading_time INTEGER DEFAULT 0,
+    -- Datas
+    entry_date DATE NOT NULL,
+    entry_time TIME,
+    -- Mídia
+    images JSONB,
+    attachments JSONB,
+    -- Metadados
+    metadata JSONB,
+    -- Soft delete
+    deleted_at TIMESTAMP
+);
+
+-- =====================================================
+-- TAGS (TAGS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS tags (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Dados
+    name VARCHAR(50) NOT NULL,
+    slug VARCHAR(50) NOT NULL,
+    color VARCHAR(7) DEFAULT '#3B82F6',
+    icon VARCHAR(50),
+    description VARCHAR(200),
+    -- Métricas
+    usage_count INTEGER DEFAULT 0,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    -- Unicidade por usuário
+    UNIQUE(user_id, slug)
+);
+
+-- =====================================================
+-- RELAÇÃO ENTRADA-TAG (ENTRY_TAGS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS entry_tags (
+    entry_id VARCHAR(36) NOT NULL REFERENCES diary_entries(id) ON DELETE CASCADE,
+    tag_id VARCHAR(36) NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (entry_id, tag_id)
+);
+
+-- =====================================================
+-- CONFIGURAÇÕES DO USUÁRIO (USER_SETTINGS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS user_settings (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Aparência
+    theme VARCHAR(20) DEFAULT 'dark',
+    font_family VARCHAR(50) DEFAULT 'Inter',
+    font_size VARCHAR(10) DEFAULT 'medium',
+    -- Editor
+    editor_mode VARCHAR(20) DEFAULT 'rich',
+    auto_save BOOLEAN DEFAULT TRUE,
+    auto_save_interval INTEGER DEFAULT 30,
+    spell_check BOOLEAN DEFAULT TRUE,
+    -- Notificações
+    reminder_enabled BOOLEAN DEFAULT FALSE,
+    reminder_time TIME DEFAULT '21:00:00',
+    reminder_days JSONB DEFAULT '["mon","tue","wed","thu","fri","sat","sun"]',
+    email_notifications BOOLEAN DEFAULT TRUE,
+    -- Privacidade
+    default_privacy VARCHAR(20) DEFAULT 'private',
+    require_pin BOOLEAN DEFAULT FALSE,
+    pin_hash VARCHAR(255),
+    -- Estatísticas
+    show_word_count BOOLEAN DEFAULT TRUE,
+    show_mood_stats BOOLEAN DEFAULT TRUE,
+    show_streak BOOLEAN DEFAULT TRUE,
+    -- Exportação
+    default_export_format export_format DEFAULT 'pdf',
+    include_images_export BOOLEAN DEFAULT TRUE,
+    -- Backup
+    auto_backup BOOLEAN DEFAULT FALSE,
+    backup_frequency VARCHAR(20) DEFAULT 'weekly',
+    last_backup_at TIMESTAMP
+);
+
+-- =====================================================
+-- PROMPTS DE ESCRITA (WRITING_PROMPTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS writing_prompts (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento (NULL = prompt do sistema)
+    user_id VARCHAR(36) REFERENCES users(id) ON DELETE CASCADE,
+    -- Dados
+    prompt_text TEXT NOT NULL,
+    category VARCHAR(50),
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_system BOOLEAN DEFAULT FALSE,
+    -- Métricas
+    times_used INTEGER DEFAULT 0
+);
+
+-- =====================================================
+-- HISTÓRICO DE HUMOR (MOOD_HISTORY)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS mood_history (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    entry_id VARCHAR(36) REFERENCES diary_entries(id) ON DELETE SET NULL,
+    -- Dados
+    mood mood_type NOT NULL,
+    mood_score INTEGER CHECK (mood_score >= 1 AND mood_score <= 10),
+    energy_level INTEGER CHECK (energy_level >= 1 AND energy_level <= 10),
+    notes VARCHAR(500),
+    -- Data
+    recorded_date DATE NOT NULL,
+    recorded_time TIME DEFAULT CURRENT_TIME
+);
+
+-- =====================================================
+-- STREAKS E CONQUISTAS (USER_STREAKS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS user_streaks (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Streak atual
+    current_streak INTEGER DEFAULT 0,
+    longest_streak INTEGER DEFAULT 0,
+    -- Datas
+    streak_start_date DATE,
+    last_entry_date DATE,
+    -- Estatísticas
+    total_entries INTEGER DEFAULT 0,
+    total_words INTEGER DEFAULT 0,
+    total_days_active INTEGER DEFAULT 0,
+    -- Conquistas
+    achievements JSONB DEFAULT '[]'
+);
+
+-- =====================================================
+-- LOG DE ATIVIDADES (ACTIVITY_LOGS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) REFERENCES users(id) ON DELETE SET NULL,
+    -- Dados
+    action VARCHAR(50) NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,
+    entity_id VARCHAR(36),
+    -- Detalhes
+    old_values JSONB,
+    new_values JSONB,
+    description VARCHAR(500),
+    -- Contexto
+    ip_address INET,
+    user_agent TEXT,
+    -- Metadados
+    metadata JSONB
+);
+
+-- =====================================================
+-- TEMPLATES DE ENTRADA (ENTRY_TEMPLATES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS entry_templates (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Dados
+    name VARCHAR(100) NOT NULL,
+    description VARCHAR(255),
+    content_template TEXT NOT NULL,
+    -- Configurações
+    default_mood mood_type,
+    default_tags JSONB,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_default BOOLEAN DEFAULT FALSE,
+    -- Métricas
+    times_used INTEGER DEFAULT 0
+);
+
+-- =====================================================
+-- COMPARTILHAMENTOS (SHARED_ENTRIES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS shared_entries (
+    id VARCHAR(36) PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    entry_id VARCHAR(36) NOT NULL REFERENCES diary_entries(id) ON DELETE CASCADE,
+    -- Compartilhamento
+    share_token VARCHAR(100) UNIQUE NOT NULL,
+    share_password_hash VARCHAR(255),
+    -- Permissões
+    allow_comments BOOLEAN DEFAULT FALSE,
+    -- Validade
+    expires_at TIMESTAMP,
+    max_views INTEGER,
+    view_count INTEGER DEFAULT 0,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- =====================================================
+-- ÍNDICES PARA PERFORMANCE - DIARIO
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_diary_entries_user ON diary_entries(user_id);
+CREATE INDEX IF NOT EXISTS idx_diary_entries_date ON diary_entries(entry_date DESC);
+CREATE INDEX IF NOT EXISTS idx_diary_entries_user_date ON diary_entries(user_id, entry_date DESC);
+CREATE INDEX IF NOT EXISTS idx_diary_entries_mood ON diary_entries(mood);
+CREATE INDEX IF NOT EXISTS idx_diary_entries_favorite ON diary_entries(user_id, is_favorite) WHERE is_favorite = TRUE;
+CREATE INDEX IF NOT EXISTS idx_diary_entries_deleted ON diary_entries(deleted_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tags_user ON tags(user_id);
+CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(user_id, slug);
+CREATE INDEX IF NOT EXISTS idx_entry_tags_entry ON entry_tags(entry_id);
+CREATE INDEX IF NOT EXISTS idx_entry_tags_tag ON entry_tags(tag_id);
+CREATE INDEX IF NOT EXISTS idx_mood_history_user ON mood_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_mood_history_date ON mood_history(user_id, recorded_date DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_entity ON activity_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_shared_entries_token ON shared_entries(share_token);
+CREATE INDEX IF NOT EXISTS idx_writing_prompts_user ON writing_prompts(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_writing_prompts_system ON writing_prompts(is_system) WHERE is_system = TRUE;
+
+-- =====================================================
+-- TRIGGERS PARA ATUALIZAÇÃO AUTOMÁTICA
+-- =====================================================
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION count_words()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.content IS NOT NULL THEN
+        NEW.word_count = array_length(regexp_split_to_array(trim(NEW.content), '\\s+'), 1);
+        NEW.reading_time = GREATEST(1, NEW.word_count / 200);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION update_tag_usage()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE tags SET usage_count = usage_count + 1 WHERE id = NEW.tag_id;
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE tags SET usage_count = GREATEST(0, usage_count - 1) WHERE id = OLD.tag_id;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Aplicar triggers
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_diary_entries_updated_at ON diary_entries;
+CREATE TRIGGER update_diary_entries_updated_at BEFORE UPDATE ON diary_entries
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_tags_updated_at ON tags;
+CREATE TRIGGER update_tags_updated_at BEFORE UPDATE ON tags
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_user_settings_updated_at ON user_settings;
+CREATE TRIGGER update_user_settings_updated_at BEFORE UPDATE ON user_settings
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_word_count ON diary_entries;
+CREATE TRIGGER update_word_count BEFORE INSERT OR UPDATE ON diary_entries
+    FOR EACH ROW EXECUTE FUNCTION count_words();
+
+DROP TRIGGER IF EXISTS update_tag_usage_insert ON entry_tags;
+CREATE TRIGGER update_tag_usage_insert AFTER INSERT ON entry_tags
+    FOR EACH ROW EXECUTE FUNCTION update_tag_usage();
+
+DROP TRIGGER IF EXISTS update_tag_usage_delete ON entry_tags;
+CREATE TRIGGER update_tag_usage_delete AFTER DELETE ON entry_tags
+    FOR EACH ROW EXECUTE FUNCTION update_tag_usage();
+
+-- =====================================================
+-- DADOS INICIAIS - PROMPTS DO SISTEMA
+-- =====================================================
+INSERT INTO writing_prompts (id, prompt_text, category, is_system, is_active) VALUES
+    (gen_random_uuid()::text, 'O que aconteceu de bom hoje?', 'gratidao', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Pelo que você é grato hoje?', 'gratidao', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Como você está se sentindo agora?', 'emocoes', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Qual foi o momento mais marcante do seu dia?', 'reflexao', TRUE, TRUE),
+    (gen_random_uuid()::text, 'O que você aprendeu hoje?', 'aprendizado', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Quais são seus objetivos para amanhã?', 'planejamento', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Descreva um momento que te fez sorrir hoje.', 'positividade', TRUE, TRUE),
+    (gen_random_uuid()::text, 'O que você faria diferente hoje se pudesse?', 'reflexao', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Qual desafio você enfrentou hoje e como lidou com ele?', 'desafios', TRUE, TRUE),
+    (gen_random_uuid()::text, 'Escreva uma carta para o seu eu do futuro.', 'criativo', TRUE, TRUE)
+ON CONFLICT DO NOTHING;
+"""
+
+# =====================================================
 # MAPEAMENTO DE PRODUTOS PARA SCHEMAS
 # =====================================================
 PRODUCT_SCHEMAS = {
     "enterprise": TENANT_SCHEMA_SQL,
     "tech-emp": TENANT_SCHEMA_SQL,
     "condotech": CONDOTECH_SCHEMA_SQL,
+    "diario": DIARIO_SCHEMA_SQL,
 }
 
 def get_schema_for_product(product_code: str) -> str:

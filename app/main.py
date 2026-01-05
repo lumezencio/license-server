@@ -24,7 +24,8 @@ from app.api import (
     provisioning_router,
     tenant_auth_router,
     tenant_gateway_router,
-    payments_router
+    payments_router,
+    diario_gateway_router
 )
 
 # Rate limiting
@@ -120,6 +121,7 @@ app.include_router(provisioning_router, prefix="/api")
 app.include_router(tenant_auth_router, prefix="/api")
 app.include_router(tenant_gateway_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
+app.include_router(diario_gateway_router, prefix="/api")
 
 # Static files para uploads
 # Usa diretório relativo para desenvolvimento local e /app/uploads para produção
