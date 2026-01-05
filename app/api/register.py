@@ -202,8 +202,9 @@ async def background_provision_tenant(
                 await db.commit()
                 logger.info(f"[BACKGROUND] === TENANT {tenant_code} PROVISIONADO COM SUCESSO! ===")
 
-                # Envia email de boas-vindas
-                login_url = f"{settings.LOGIN_URL}?tenant={tenant_code}"
+                # Envia email de boas-vindas (usa URL do produto correto)
+                product_login_url = settings.get_product_url(product_code, "login_url")
+                login_url = f"{product_login_url}?tenant={tenant_code}"
                 send_welcome_email_safe(
                     to_email=admin_email,
                     name=admin_name,
@@ -412,7 +413,9 @@ async def register_trial(
     )
 
     # 12. Retorna sucesso IMEDIATAMENTE (provisionamento continua em background)
-    login_url = f"{settings.LOGIN_URL}?tenant={tenant_code}"
+    # Usa URL do produto correto
+    product_login_url = settings.get_product_url(request.product_code, "login_url")
+    login_url = f"{product_login_url}?tenant={tenant_code}"
     response_message = (
         "Cadastro realizado com sucesso! "
         "Seu ambiente está sendo preparado (aguarde alguns segundos). "

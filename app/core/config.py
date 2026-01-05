@@ -85,9 +85,42 @@ class Settings(BaseSettings):
     ERROR_NOTIFICATION_EMAIL: str = "lucianomezencio@gmail.com"
     ERROR_NOTIFICATION_ENABLED: bool = True
 
-    # App URLs
+    # App URLs (default para Enterprise/Tech-EMP)
     APP_URL: str = "https://www.tech-emp.com"
     LOGIN_URL: str = "https://www.tech-emp.com/login"
+
+    # URLs por produto
+    PRODUCT_URLS: dict = {
+        "enterprise": {
+            "app_url": "https://enterprise.softwarecorp.com.br",
+            "login_url": "https://enterprise.softwarecorp.com.br/login",
+            "name": "Enterprise",
+            "company": "SoftwareCorp"
+        },
+        "tech-emp": {
+            "app_url": "https://www.tech-emp.com",
+            "login_url": "https://www.tech-emp.com/login",
+            "name": "Tech-EMP",
+            "company": "Tech-EMP"
+        },
+        "condotech": {
+            "app_url": "https://condotech.softwarecorp.com.br",
+            "login_url": "https://condotech.softwarecorp.com.br/login",
+            "name": "CondoTech",
+            "company": "SoftwareCorp"
+        },
+        "diario": {
+            "app_url": "https://diario.softwarecorp.com.br",
+            "login_url": "https://diario.softwarecorp.com.br/login",
+            "name": "Diario Pessoal",
+            "company": "SoftwareCorp"
+        }
+    }
+
+    def get_product_url(self, product_code: str, url_type: str = "login_url") -> str:
+        """Retorna a URL correta para o produto especificado."""
+        product = self.PRODUCT_URLS.get(product_code.lower(), self.PRODUCT_URLS.get("enterprise"))
+        return product.get(url_type, self.LOGIN_URL)
 
     # PostgreSQL Master (para criar bancos de tenants)
     POSTGRES_HOST: str = "localhost"
