@@ -495,6 +495,9 @@ class EmailService:
                             <p style="margin: 10px 0 0 0; color: #047857; font-size: 13px;">
                                 WhatsApp disponivel • Atendimento rapido e personalizado
                             </p>
+                            <p style="margin: 10px 0 0 0; color: #047857; font-size: 13px;">
+                                📧 gestao.techemp@gmail.com • Passos - MG
+                            </p>
                         </td>
                     </tr>
                 </table>
@@ -590,6 +593,8 @@ Para aproveitar ao maximo o sistema, faca os cadastros basicos ANTES de iniciar 
 Nossa equipe de suporte esta pronta para ajudar voce!
 
 📱 WhatsApp: (35) 9.8858-6400
+📧 Email: gestao.techemp@gmail.com
+📍 Passos - MG
 Atendimento rapido e personalizado
 
 --------------------------------------------
@@ -701,6 +706,9 @@ Tech-EMP Sistema
                 <p style="margin: 10px 0 0 0; color: #1e293b; font-size: 18px; font-weight: bold;">
                     📱 (35) 9.8858-6400
                 </p>
+                <p style="margin: 5px 0 0 0; color: #64748b; font-size: 13px;">
+                    📧 gestao.techemp@gmail.com • Passos - MG
+                </p>
             </td>
         </tr>
 
@@ -749,7 +757,9 @@ Escolha uma senha forte com pelo menos 8 caracteres, incluindo letras maiusculas
 --------------------------------------------
 📞 PRECISA DE AJUDA?
 --------------------------------------------
-Entre em contato: (35) 9.8858-6400
+📱 WhatsApp: (35) 9.8858-6400
+📧 Email: gestao.techemp@gmail.com
+📍 Passos - MG
 
 --------------------------------------------
 Tech-EMP Sistema
