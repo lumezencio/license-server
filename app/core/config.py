@@ -110,9 +110,9 @@ class Settings(BaseSettings):
             "company": "SoftwareCorp"
         },
         "diario": {
-            "app_url": "https://diario.softwarecorp.com.br",
-            "login_url": "https://diario.softwarecorp.com.br/login",
-            "name": "Diario Pessoal",
+            "app_url": "https://meu-diario.softwarecorp.com.br",
+            "login_url": "https://meu-diario.softwarecorp.com.br/login",
+            "name": "Meu-Diario",
             "company": "SoftwareCorp"
         }
     }
