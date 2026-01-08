@@ -421,7 +421,7 @@ async def tenant_login(
     # 8. Monta URL da API do tenant
     # SISTEMA MULTI-TENANT: Usa API Gateway centralizado no License Server
     # O gateway autentica pelo JWT e roteia para o banco correto do tenant
-    # Prioridade: 1) api_url do banco, 2) custom_domain, 3) subdomain, 4) fallback
+    # Prioridade: 1) api_url do banco, 2) custom_domain, 3) subdomain, 4) fallback por produto
     if tenant.api_url:
         api_url = tenant.api_url
     elif tenant.custom_domain:
@@ -429,8 +429,15 @@ async def tenant_login(
     elif tenant.subdomain:
         api_url = f"https://{tenant.subdomain}.tech-emp.com/api/v1"
     else:
-        # Fallback para API Gateway multi-tenant
-        api_url = f"https://api.softwarecorp.com.br/api/gateway"
+        # Fallback para API Gateway multi-tenant - URL especifica por produto
+        product_code = (tenant.product_code or "enterprise").lower()
+        if product_code == "diario":
+            api_url = "https://api.softwarecorp.com.br/api/gateway/diario"
+        elif product_code == "condotech":
+            api_url = "https://api.softwarecorp.com.br/api/gateway/condotech"
+        else:
+            # Enterprise e outros usam o gateway generico
+            api_url = "https://api.softwarecorp.com.br/api/gateway"
 
     # Determina is_trial baseado na licença (prioritário) ou tenant
     is_trial_final = license_info["is_trial"] if license_info else tenant.is_trial
