@@ -398,6 +398,7 @@ async def get_tenant_from_token(
         )
 
     user_data = {
+        "id": payload.get("user_id"),  # 'id' para compatibilidade com diario_gateway.py
         "email": payload.get("sub"),
         "user_id": payload.get("user_id"),
         "is_admin": payload.get("is_admin", False)

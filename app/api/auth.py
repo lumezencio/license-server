@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
-from app.models import AdminUser
+from app.models import AdminUser, Tenant
 from app.schemas import LoginRequest, LoginResponse, AdminUserCreate, AdminUserResponse
 from app.core import (
     verify_password,
@@ -153,3 +153,40 @@ async def initial_setup(db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"message": "Setup completed", "email": settings.ADMIN_EMAIL}
+
+
+# ============================================
+# ADMIN - TENANTS ENDPOINT
+# ============================================
+@router.get("/admin/tenants")
+async def list_tenants(
+    db: AsyncSession = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Lista todos os tenants com informacao do produto"""
+    result = await db.execute(
+        select(Tenant).order_by(Tenant.registered_at.desc())
+    )
+    tenants = result.scalars().all()
+
+    return [
+        {
+            "id": t.id,
+            "tenant_code": t.tenant_code,
+            "name": t.name,
+            "trade_name": t.trade_name,
+            "email": t.email,
+            "document": t.document,
+            "phone": t.phone,
+            "product_code": t.product_code,
+            "status": t.status,
+            "is_trial": t.is_trial,
+            "trial_days": t.trial_days,
+            "trial_expires_at": t.trial_expires_at.isoformat() if t.trial_expires_at else None,
+            "database_name": t.database_name,
+            "registered_at": t.registered_at.isoformat() if t.registered_at else None,
+            "provisioned_at": t.provisioned_at.isoformat() if t.provisioned_at else None,
+            "activated_at": t.activated_at.isoformat() if t.activated_at else None,
+        }
+        for t in tenants
+    ]

@@ -8,12 +8,14 @@ import {
   Settings,
   LogOut,
   Shield,
-  ChevronRight
+  ChevronRight,
+  Building2
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const menuItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/tenants', icon: Building2, label: 'Tenants' },
   { path: '/clients', icon: Users, label: 'Clientes' },
   { path: '/licenses', icon: Key, label: 'Licenças' },
   { path: '/validations', icon: History, label: 'Validações' },

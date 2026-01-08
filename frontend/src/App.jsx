@@ -5,6 +5,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Clients from './pages/Clients';
 import Licenses from './pages/Licenses';
+import Tenants from './pages/Tenants';
 import Validations from './pages/Validations';
 import Settings from './pages/Settings';
 import { FullPageLoader } from './components/ui/LoadingSpinner';
@@ -60,6 +61,7 @@ function AppRoutes() {
         <Route index element={<Dashboard />} />
         <Route path="clients" element={<Clients />} />
         <Route path="licenses" element={<Licenses />} />
+        <Route path="tenants" element={<Tenants />} />
         <Route path="validations" element={<Validations />} />
         <Route path="settings" element={<Settings />} />
       </Route>
