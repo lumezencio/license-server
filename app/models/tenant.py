@@ -62,6 +62,7 @@ class Tenant(Base):
     # Configurações de acesso
     subdomain = Column(String(50), unique=True)  # Opcional: empresa.tech-emp.com
     custom_domain = Column(String(255))  # Opcional: sistema.empresa.com
+    api_url = Column(String(500))  # URL da API Gateway para este tenant
 
     # Credenciais de primeiro acesso (geradas no cadastro)
     initial_password_hash = Column(String(255))  # Hash do CPF/CNPJ
