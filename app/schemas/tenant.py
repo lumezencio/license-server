@@ -108,6 +108,7 @@ class TenantResponse(BaseModel):
     trial_expires_at: Optional[datetime] = None
     is_trial_valid: bool
     client_id: Optional[str] = None
+    license_key: Optional[str] = None  # Chave de licença para exibição
 
     class Config:
         from_attributes = True

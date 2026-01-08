@@ -572,6 +572,16 @@ async def get_tenant_info(
             detail="Tenant não encontrado"
         )
 
+    # Busca a license_key do cliente associado
+    license_key = None
+    if tenant.client_id:
+        result = await db.execute(
+            select(License).where(License.client_id == tenant.client_id)
+        )
+        license = result.scalar_one_or_none()
+        if license:
+            license_key = license.license_key
+
     return TenantResponse(
         id=tenant.id,
         tenant_code=tenant.tenant_code,
@@ -590,7 +600,8 @@ async def get_tenant_info(
         activated_at=tenant.activated_at,
         trial_expires_at=tenant.trial_expires_at,
         is_trial_valid=tenant.is_trial_valid(),
-        client_id=tenant.client_id
+        client_id=tenant.client_id,
+        license_key=license_key
     )
 
 
