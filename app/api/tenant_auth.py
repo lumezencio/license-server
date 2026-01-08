@@ -483,19 +483,53 @@ async def get_tenant_public_info(
     )
 
 
+class ChangePasswordRequest(BaseModel):
+    """Request para troca de senha via JSON body"""
+    current_password: str
+    new_password: str
+
+
 @router.post("/change-password")
 async def change_tenant_password(
-    tenant_code: str,
-    email: EmailStr,
-    current_password: str,
-    new_password: str,
+    request: Request,
+    data: ChangePasswordRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Troca a senha do usuario no banco do tenant.
-    Usado principalmente no primeiro acesso.
+    Troca a senha do usuario no banco do tenant (isolado).
+    Usa o token JWT para identificar tenant e email.
+    Mantém a arquitetura multi-tenant com bancos separados.
     """
-    # Busca tenant
+    # Extrai token do header Authorization
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de autenticacao necessario"
+        )
+
+    token = auth_header.replace("Bearer ", "")
+
+    # Decodifica token para obter tenant_code e email
+    try:
+        from jose import jwt
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        tenant_code = payload.get("tenant_code")
+        email = payload.get("sub")  # email esta no campo 'sub'
+
+        if not tenant_code or not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token invalido"
+            )
+    except Exception as e:
+        logger.error(f"Erro ao decodificar token: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token invalido ou expirado"
+        )
+
+    # Busca tenant no License Server (banco central)
     result = await db.execute(
         select(Tenant).where(Tenant.tenant_code == tenant_code)
     )
@@ -521,7 +555,7 @@ async def change_tenant_password(
         tenant.database_user,
         tenant.database_password,
         email,
-        current_password
+        data.current_password
     )
 
     if not user:
@@ -548,7 +582,7 @@ async def change_tenant_password(
         )
 
         try:
-            new_hash = hashlib.sha256(new_password.encode()).hexdigest()
+            new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
             await conn.execute("""
                 UPDATE users
                 SET hashed_password = $1, must_change_password = FALSE, updated_at = $2
@@ -809,7 +843,7 @@ async def reset_password(
     new_password = request_data.new_password
 
     # Valida nova senha
-    if len(new_password) < 6:
+    if len(data.new_password) < 6:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A nova senha deve ter no minimo 6 caracteres"

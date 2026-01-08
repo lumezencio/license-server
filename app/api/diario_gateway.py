@@ -6,7 +6,7 @@ Este modulo fornece endpoints especificos para o produto DIARIO:
 - CRUD de entradas do diario
 - Gestao de tags
 - Configuracoes do usuario
-- Estatisticas e historico de humor
+- Estatisticas e historico de humor (com metricas detalhadas)
 - Prompts de escrita
 """
 from datetime import datetime, date, time
@@ -158,9 +158,15 @@ async def get_dashboard(
 
         # Streak atual
         streak_data = await conn.fetchrow(
-            "SELECT current_streak, longest_streak, total_words FROM user_streaks WHERE user_id = $1",
+            "SELECT current_streak, longest_streak FROM user_streaks WHERE user_id = $1",
             user["id"]
         )
+
+        # Total de palavras calculado diretamente das entradas
+        total_words = await conn.fetchval("""
+            SELECT COALESCE(SUM(word_count), 0) FROM diary_entries
+            WHERE user_id = $1 AND deleted_at IS NULL
+        """, user["id"])
 
         # Humor medio dos ultimos 7 dias
         avg_mood = await conn.fetchval("""
@@ -203,7 +209,7 @@ async def get_dashboard(
                 "entries_this_month": entries_this_month or 0,
                 "current_streak": streak_data["current_streak"] if streak_data else 0,
                 "longest_streak": streak_data["longest_streak"] if streak_data else 0,
-                "total_words": streak_data["total_words"] if streak_data else 0,
+                "total_words": total_words or 0,
                 "avg_mood_week": round(float(avg_mood), 1) if avg_mood else None
             },
             "recent_entries": [row_to_dict(r) for r in recent_entries],
@@ -347,7 +353,11 @@ async def create_entry(
 
     try:
         entry_id = str(uuid_lib.uuid4())
-        entry_date = entry.entry_date or date.today().isoformat()
+        # entry_date precisa ser objeto date, nao string
+        if entry.entry_date:
+            entry_date = datetime.strptime(entry.entry_date, '%Y-%m-%d').date() if isinstance(entry.entry_date, str) else entry.entry_date
+        else:
+            entry_date = date.today()
 
         await conn.execute("""
             INSERT INTO diary_entries (
@@ -425,6 +435,9 @@ async def update_entry(
             if value is not None:
                 if field in ["images", "attachments", "metadata"]:
                     value = json.dumps(value)
+                # Converter entry_date de string para date
+                elif field == "entry_date" and isinstance(value, str):
+                    value = datetime.strptime(value, '%Y-%m-%d').date()
                 updates.append(f"{field} = ${param_idx}")
                 params.append(value)
                 param_idx += 1
@@ -779,17 +792,55 @@ async def get_stats(
         }
         interval = interval_map.get(period, "30 days")
 
-        # Estatisticas gerais
+        # Estatisticas gerais do periodo
         stats = await conn.fetchrow(f"""
             SELECT
                 COUNT(*) as total_entries,
-                SUM(word_count) as total_words,
-                AVG(word_count) as avg_words,
+                COALESCE(SUM(word_count), 0) as total_words,
+                COALESCE(AVG(word_count), 0) as avg_words,
                 AVG(mood_score) as avg_mood,
                 COUNT(DISTINCT entry_date) as days_with_entries
             FROM diary_entries
             WHERE user_id = $1 AND deleted_at IS NULL
             AND entry_date >= CURRENT_DATE - INTERVAL '{interval}'
+        """, user["id"])
+
+        # Entradas esta semana
+        entries_this_week = await conn.fetchval("""
+            SELECT COUNT(*) FROM diary_entries
+            WHERE user_id = $1 AND deleted_at IS NULL
+            AND entry_date >= CURRENT_DATE - INTERVAL '7 days'
+        """, user["id"])
+
+        # Entradas este mes
+        entries_this_month = await conn.fetchval("""
+            SELECT COUNT(*) FROM diary_entries
+            WHERE user_id = $1 AND deleted_at IS NULL
+            AND entry_date >= date_trunc('month', CURRENT_DATE)
+        """, user["id"])
+
+        # Entradas este ano
+        entries_this_year = await conn.fetchval("""
+            SELECT COUNT(*) FROM diary_entries
+            WHERE user_id = $1 AND deleted_at IS NULL
+            AND entry_date >= date_trunc('year', CURRENT_DATE)
+        """, user["id"])
+
+        # Total de tags do usuario
+        total_tags = await conn.fetchval("""
+            SELECT COUNT(*) FROM tags WHERE user_id = $1
+        """, user["id"])
+
+        # Total de dias ativos (dias distintos com entradas)
+        total_days_active = await conn.fetchval("""
+            SELECT COUNT(DISTINCT entry_date) FROM diary_entries
+            WHERE user_id = $1 AND deleted_at IS NULL
+        """, user["id"])
+
+        # Total de favoritos
+        favorite_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM diary_entries
+            WHERE user_id = $1 AND deleted_at IS NULL AND is_favorite = true
         """, user["id"])
 
         # Distribuicao de humor
@@ -826,9 +877,19 @@ async def get_stats(
             LIMIT 10
         """, user["id"])
 
+        general_stats = row_to_dict(stats)
+        general_stats.update({
+            "entries_this_week": entries_this_week or 0,
+            "entries_this_month": entries_this_month or 0,
+            "entries_this_year": entries_this_year or 0,
+            "total_tags": total_tags or 0,
+            "total_days_active": total_days_active or 0,
+            "favorite_count": favorite_count or 0,
+        })
+
         return {
             "period": period,
-            "general": row_to_dict(stats),
+            "general": general_stats,
             "mood_distribution": [row_to_dict(r) for r in mood_distribution],
             "entries_by_weekday": [row_to_dict(r) for r in entries_by_weekday],
             "top_tags": [row_to_dict(r) for r in top_tags]
@@ -871,7 +932,11 @@ async def record_mood(
 
     try:
         mood_id = str(uuid_lib.uuid4())
-        recorded_date = mood_data.recorded_date or date.today().isoformat()
+        # recorded_date precisa ser objeto date, nao string
+        if mood_data.recorded_date:
+            recorded_date = datetime.strptime(mood_data.recorded_date, '%Y-%m-%d').date() if isinstance(mood_data.recorded_date, str) else mood_data.recorded_date
+        else:
+            recorded_date = date.today()
 
         await conn.execute("""
             INSERT INTO mood_history (id, user_id, mood, mood_score, energy_level, notes, recorded_date)
