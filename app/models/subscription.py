@@ -47,6 +47,9 @@ class SubscriptionPlan(Base):
     # Identificador único do plano (usado em URLs e referências)
     code = Column(String(50), unique=True, nullable=False, index=True)
 
+    # Código do produto (ENTERPRISE, DIARIO, etc) - permite planos separados por sistema
+    product_code = Column(String(20), default="ENTERPRISE", nullable=False, index=True)
+
     # Informações do plano
     name = Column(String(100), nullable=False)  # Ex: "Plano 30 Dias"
     description = Column(Text)  # Descrição detalhada

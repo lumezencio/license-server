@@ -43,6 +43,7 @@ class CreatePreferenceRequest(BaseModel):
     """Request para criar preferência de pagamento"""
     tenant_code: str
     plan_code: str
+    return_url: Optional[str] = None  # URL base para retorno (se não informado, usa APP_URL)
 
 
 class CreatePreferenceResponse(BaseModel):
@@ -125,17 +126,28 @@ async def ensure_plans_exist(db: AsyncSession):
 # ============================================================
 
 @router.get("/plans", response_model=List[PlanResponse])
-async def list_plans(db: AsyncSession = Depends(get_db)):
+async def list_plans(
+    product_code: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
     """
     Lista todos os planos de assinatura disponíveis.
     Retorna ordenado por sort_order.
+
+    Parâmetros:
+    - product_code: Filtra planos por produto (ENTERPRISE, DIARIO, etc.)
+                   Se não informado, retorna planos ENTERPRISE (retrocompatível)
     """
-    # Garante que os planos existam
+    # Garante que os planos padrão existam
     await ensure_plans_exist(db)
+
+    # Filtra por product_code (default: ENTERPRISE para retrocompatibilidade)
+    filter_product = product_code.upper() if product_code else "ENTERPRISE"
 
     result = await db.execute(
         select(SubscriptionPlan)
         .where(SubscriptionPlan.is_active == True)
+        .where(SubscriptionPlan.product_code == filter_product)
         .order_by(SubscriptionPlan.sort_order)
     )
     plans = result.scalars().all()
@@ -221,13 +233,19 @@ async def create_preference(
     # Inicializa SDK do Mercado Pago
     sdk = mercadopago.SDK(settings.MP_ACCESS_TOKEN)
 
+    # Define URL base para retorno (permite customização por aplicação)
+    base_url = request.return_url.rstrip('/') if request.return_url else settings.APP_URL
+
+    # Define descrição baseada na aplicação
+    app_name = "Diario Pessoal" if "diario" in base_url.lower() else "Tech-EMP"
+
     # Cria a preferência
     preference_data = {
         "items": [
             {
                 "id": plan.code,
-                "title": f"Tech-EMP - {plan.name}",
-                "description": f"Assinatura do sistema Tech-EMP por {plan.days} dias",
+                "title": f"{app_name} - {plan.name}",
+                "description": f"Assinatura do sistema {app_name} por {plan.days} dias",
                 "quantity": 1,
                 "currency_id": "BRL",
                 "unit_price": float(plan.price)
@@ -238,14 +256,14 @@ async def create_preference(
             "name": tenant.name
         },
         "external_reference": external_reference,
-        "notification_url": f"{settings.APP_URL.replace('www.', 'license.')}/api/payments/webhook",
+        "notification_url": "https://api.softwarecorp.com.br/api/payments/webhook",
         "back_urls": {
-            "success": f"{settings.APP_URL}/pagamento/sucesso?ref={transaction.id}",
-            "failure": f"{settings.APP_URL}/pagamento/erro?ref={transaction.id}",
-            "pending": f"{settings.APP_URL}/pagamento/pendente?ref={transaction.id}"
+            "success": f"{base_url}/pagamento/sucesso?ref={transaction.id}",
+            "failure": f"{base_url}/pagamento/erro?ref={transaction.id}",
+            "pending": f"{base_url}/pagamento/pendente?ref={transaction.id}"
         },
         "auto_return": "approved",
-        "statement_descriptor": "TECH-EMP",
+        "statement_descriptor": app_name[:22].upper().replace(" ", "-"),
         "expires": True,
         "expiration_date_from": datetime.utcnow().isoformat() + "Z",
         "expiration_date_to": (datetime.utcnow() + timedelta(hours=24)).isoformat() + "Z"
