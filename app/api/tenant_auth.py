@@ -574,7 +574,7 @@ async def change_tenant_password(
         )
 
     # Valida nova senha
-    if len(new_password) < 6:
+    if len(data.new_password) < 6:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A nova senha deve ter no minimo 6 caracteres"
@@ -852,7 +852,7 @@ async def reset_password(
     new_password = request_data.new_password
 
     # Valida nova senha
-    if len(data.new_password) < 6:
+    if len(new_password) < 6:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A nova senha deve ter no minimo 6 caracteres"
