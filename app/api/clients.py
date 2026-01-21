@@ -148,11 +148,23 @@ async def update_client(
 @router.delete("/{client_id}")
 async def delete_client(
     client_id: str,
-    permanent: bool = Query(False, description="Se True, exclui permanentemente"),
+    permanent: bool = Query(False, description="Se True, exclui permanentemente incluindo tenant e banco"),
     db: AsyncSession = Depends(get_db),
     admin: AdminUser = Depends(get_current_admin)
 ):
-    """Remove cliente (soft delete por padrão, ou hard delete se permanent=true)"""
+    """
+    Remove cliente.
+    - permanent=False (padrão): apenas desativa o cliente (soft delete)
+    - permanent=True: EXCLUI TUDO - banco de dados do tenant, usuário PostgreSQL,
+      tenant, licenças e cliente. Operação irreversível!
+    """
+    from app.models import License, Tenant
+    import asyncpg
+    import logging
+    import os
+
+    logger = logging.getLogger(__name__)
+
     result = await db.execute(
         select(Client).where(Client.id == client_id)
     )
@@ -161,29 +173,118 @@ async def delete_client(
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Client not found"
+            detail="Cliente não encontrado"
         )
 
-    if permanent:
-        # Hard delete - exclusão permanente
-        # Verifica se tem licenças associadas
-        from app.models import License
-        licenses_result = await db.execute(
-            select(License).where(License.client_id == client_id)
-        )
-        licenses = licenses_result.scalars().all()
-
-        if licenses:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Não é possível excluir. Cliente possui {len(licenses)} licença(s) associada(s)."
-            )
-
-        await db.delete(client)
-        await db.commit()
-        return {"message": "Client permanently deleted"}
-    else:
-        # Soft delete
+    if not permanent:
+        # Soft delete - apenas desativa
         client.is_active = False
         await db.commit()
-        return {"message": "Client deactivated successfully"}
+        return {"message": "Cliente desativado com sucesso", "client_id": client_id}
+
+    # ========== EXCLUSÃO PERMANENTE ==========
+    logger.info(f"[DELETE-CLIENT] Iniciando exclusão permanente do cliente {client_id} ({client.name})")
+
+    deleted_items = {
+        "database": False,
+        "db_user": False,
+        "tenant": False,
+        "licenses": 0,
+        "client": False
+    }
+
+    # 1. Buscar tenant associado
+    tenant_result = await db.execute(
+        select(Tenant).where(Tenant.client_id == client_id)
+    )
+    tenant = tenant_result.scalar_one_or_none()
+
+    if tenant:
+        logger.info(f"[DELETE-CLIENT] Tenant encontrado: {tenant.tenant_code}")
+
+        # 2. Excluir banco de dados e usuário PostgreSQL do tenant
+        try:
+            # Configuração do PostgreSQL master
+            postgres_host = os.environ.get("POSTGRES_HOST", "license-db")
+            if postgres_host == "localhost":
+                postgres_host = "license-db"
+
+            # Extrair credenciais do DATABASE_URL
+            database_url = os.environ.get("DATABASE_URL", "")
+            postgres_user = "license_admin"
+            postgres_password = "changeme"
+
+            if database_url:
+                import re
+                match = re.search(r'://([^:]+):([^@]+)@', database_url)
+                if match:
+                    postgres_user = match.group(1)
+                    postgres_password = match.group(2)
+
+            # Conectar ao PostgreSQL master
+            conn = await asyncpg.connect(
+                host=postgres_host,
+                port=5432,
+                user=postgres_user,
+                password=postgres_password,
+                database="postgres"
+            )
+
+            try:
+                database_name = tenant.database_name or f"cliente_{tenant.tenant_code}"
+                db_user = tenant.database_user or f"user_{tenant.tenant_code}"
+
+                # Forçar desconexão de todas as sessões do banco
+                await conn.execute(f"""
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = '{database_name}' AND pid <> pg_backend_pid()
+                """)
+
+                # Excluir banco de dados
+                await conn.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+                deleted_items["database"] = True
+                logger.info(f"[DELETE-CLIENT] Banco de dados '{database_name}' excluído")
+
+                # Excluir usuário PostgreSQL
+                await conn.execute(f'DROP USER IF EXISTS "{db_user}"')
+                deleted_items["db_user"] = True
+                logger.info(f"[DELETE-CLIENT] Usuário PostgreSQL '{db_user}' excluído")
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            logger.warning(f"[DELETE-CLIENT] Erro ao excluir banco/usuário (pode não existir): {e}")
+
+        # 3. Excluir tenant da tabela
+        await db.delete(tenant)
+        deleted_items["tenant"] = True
+        logger.info(f"[DELETE-CLIENT] Tenant {tenant.tenant_code} excluído da tabela")
+
+    # 4. Excluir licenças
+    licenses_result = await db.execute(
+        select(License).where(License.client_id == client_id)
+    )
+    licenses = licenses_result.scalars().all()
+
+    for license in licenses:
+        await db.delete(license)
+        deleted_items["licenses"] += 1
+
+    if deleted_items["licenses"] > 0:
+        logger.info(f"[DELETE-CLIENT] {deleted_items['licenses']} licença(s) excluída(s)")
+
+    # 5. Excluir cliente
+    await db.delete(client)
+    deleted_items["client"] = True
+
+    await db.commit()
+    logger.info(f"[DELETE-CLIENT] Cliente {client.name} ({client_id}) excluído permanentemente")
+
+    return {
+        "message": "Cliente excluído permanentemente com sucesso",
+        "client_id": client_id,
+        "client_name": client.name,
+        "deleted": deleted_items
+    }
