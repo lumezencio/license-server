@@ -37,6 +37,16 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yourdomain.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      # Email Settings - Resend API (recomendado para nao cair em spam)
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-resend}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      # Email Settings - SMTP (alternativa)
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-noreply@softwarecorp.com.br}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-SoftwareCorp}
     depends_on:
       db:
         condition: service_healthy

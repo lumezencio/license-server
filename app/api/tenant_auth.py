@@ -814,18 +814,22 @@ async def forgot_password(
     reset_url = f"{base_url}/reset-password?token={reset_token}"
 
     # Envia email
+    logger.info(f"[FORGOT-PASSWORD] Iniciando envio de email para: {email}")
+    logger.info(f"[FORGOT-PASSWORD] Nome do usuario: {user_info.get('name')}")
+    logger.info(f"[FORGOT-PASSWORD] URL de reset: {reset_url}")
     try:
         email_sent = email_service.send_password_reset_email(
             to_email=email,
             name=user_info.get('name') or email.split('@')[0],
             reset_url=reset_url
         )
+        logger.info(f"[FORGOT-PASSWORD] Resultado do envio: {email_sent}")
         if not email_sent:
-            logger.warning(f"Falha ao enviar email de recuperacao para: {email}")
+            logger.warning(f"[FORGOT-PASSWORD] Falha ao enviar email de recuperacao para: {email}")
     except Exception as e:
-        logger.error(f"Erro ao enviar email de recuperacao: {e}")
+        logger.error(f"[FORGOT-PASSWORD] Erro ao enviar email de recuperacao: {e}")
 
-    logger.info(f"Token de recuperacao gerado para: {email}")
+    logger.info(f"[FORGOT-PASSWORD] Token de recuperacao gerado para: {email}")
     return generic_response
 
 

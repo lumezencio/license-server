@@ -50,14 +50,9 @@ class EmailService:
     ) -> bool:
         """Envia email via Resend API (HTTP)"""
         try:
-            # Usa domínio verificado ou fallback para onboarding@resend.dev
-            # Para domínio próprio, verificar em https://resend.com/domains
-            from_email = self.from_email
-            if not self.from_email.endswith('@resend.dev'):
-                # Tenta usar domínio próprio, se falhar usa resend.dev
-                from_email = f"Tech-EMP <onboarding@resend.dev>"
-            else:
-                from_email = f"{self.from_name} <{self.from_email}>"
+            # Usa domínio verificado configurado em SMTP_FROM_EMAIL
+            # Formato: "Nome <email@dominio.com>"
+            from_email = f"{self.from_name} <{self.from_email}>"
 
             response = httpx.post(
                 "https://api.resend.com/emails",
