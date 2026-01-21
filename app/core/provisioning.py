@@ -33,11 +33,41 @@ class TenantProvisioningService:
     """
 
     def __init__(self):
-        self.master_host = settings.POSTGRES_HOST
+        import os
+        import re
+
+        # IMPORTANTE: Em produção Docker, o host DEVE ser "license-db" (nome do container)
+        postgres_host = os.environ.get("POSTGRES_HOST") or settings.POSTGRES_HOST
+        if postgres_host == "localhost":
+            postgres_host = "license-db"
+
+        # Extrair credenciais do DATABASE_URL se disponível (formato: postgresql://user:pass@host:port/db)
+        # Isso garante que usamos as mesmas credenciais configuradas para o License Server
+        database_url = os.environ.get("DATABASE_URL", "")
+        postgres_user = settings.POSTGRES_USER
+        postgres_password = settings.POSTGRES_PASSWORD
+
+        if database_url:
+            # Extrai user:password do DATABASE_URL
+            match = re.search(r'://([^:]+):([^@]+)@', database_url)
+            if match:
+                postgres_user = match.group(1)
+                postgres_password = match.group(2)
+                logger.info(f"[PROVISIONING] Usando credenciais extraídas do DATABASE_URL: user={postgres_user}")
+
+        # Fallback para credenciais padrão do ambiente Docker se ainda forem os defaults
+        if postgres_user == "postgres" and postgres_host == "license-db":
+            postgres_user = "license_admin"
+            postgres_password = "changeme"
+            logger.info(f"[PROVISIONING] Usando credenciais padrão Docker: user={postgres_user}")
+
+        self.master_host = postgres_host
         self.master_port = settings.POSTGRES_PORT
-        self.master_user = settings.POSTGRES_USER
-        self.master_password = settings.POSTGRES_PASSWORD
+        self.master_user = postgres_user
+        self.master_password = postgres_password
         self.master_database = settings.POSTGRES_DATABASE
+
+        logger.info(f"[PROVISIONING] Configurado: host={self.master_host}, user={self.master_user}, db={self.master_database}")
 
     async def _get_master_connection(self) -> asyncpg.Connection:
         """Obtém conexão com o banco master (postgres)"""

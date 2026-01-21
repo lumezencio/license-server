@@ -41,8 +41,15 @@ TRIAL_LIMITS = {
 
 router = APIRouter(prefix="/register", tags=["Registration"])
 
-# Host do banco de dados dos tenants (usa configuracao ou nome do container Docker)
-TENANT_DATABASE_HOST = settings.POSTGRES_HOST or "db"
+# Host do banco de dados dos tenants
+# IMPORTANTE: Em produção Docker, deve ser "license-db" (nome do container PostgreSQL)
+# O settings.POSTGRES_HOST pode ser "localhost" em dev, mas em produção DEVE ser "license-db"
+# Prioridade: variável de ambiente > fallback para container Docker
+import os
+TENANT_DATABASE_HOST = os.environ.get("POSTGRES_HOST") or settings.POSTGRES_HOST
+# Se ainda for localhost (default do config), usa o nome do container Docker em produção
+if TENANT_DATABASE_HOST == "localhost":
+    TENANT_DATABASE_HOST = "license-db"
 
 # Configurações de retry
 MAX_PROVISION_RETRIES = 3
