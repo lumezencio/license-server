@@ -12,9 +12,7 @@ import { Icon3DButton } from '../components/ui';
 import { Modal } from '../components/ui';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-
-// API base URL
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
+import api from '../services/api';
 
 export default function Tenants() {
   const [loading, setLoading] = useState(true);
@@ -32,20 +30,8 @@ export default function Tenants() {
   const loadTenants = async () => {
     setLoading(true);
     try {
-      const token = localStorage.getItem('admin_token');
-      const response = await fetch(`${API_URL}/auth/admin/tenants`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error('Erro ao carregar tenants');
-      }
-
-      const data = await response.json();
-      setTenants(data);
+      const response = await api.get('/auth/admin/tenants');
+      setTenants(response.data);
     } catch (error) {
       console.error('Erro ao carregar tenants:', error);
     } finally {
