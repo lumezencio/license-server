@@ -3949,23 +3949,25 @@ async def list_accounts_payable(
             items = [row_to_dict(row) for row in rows]
             return {"items": items, "accounts": items, "total": len(items)}
 
-        # Filtro para retornar apenas contas PAI (não parcelas filhas)
-        # Igual ao comportamento de accounts_receivable
-        parent_filter = "(ap.installment_number = 0 OR ap.installment_number IS NULL)"
+        # SEGURANCA: Queries sem concatenacao de strings - SQL puro parametrizado
+        # Filtro inline para retornar apenas contas PAI (nao parcelas filhas)
 
         # Conta total para paginacao (apenas contas PAI)
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_payable ap WHERE {parent_filter}") or 0
+        total = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_payable ap
+            WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
+        """) or 0
 
         # Schema legado: suppliers usa company_name/trade_name/name
         if search:
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch("""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
                     (SELECT MIN(child.due_date) FROM accounts_payable child
                      WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE {parent_filter}
+                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
                   AND (s.company_name ILIKE $1 OR s.trade_name ILIKE $1
                     OR s.name ILIKE $1 OR ap.description ILIKE $1)
                 ORDER BY ap.due_date
@@ -3974,27 +3976,27 @@ async def list_accounts_payable(
         elif status:
             # Converte status para UPPERCASE para comparar com ENUM
             status_upper = status.upper()
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch("""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
                     (SELECT MIN(child.due_date) FROM accounts_payable child
                      WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE {parent_filter}
+                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
                   AND UPPER(ap.status::text) = $3
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
             """, effective_limit, skip, status_upper)
         else:
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch("""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
                     (SELECT MIN(child.due_date) FROM accounts_payable child
                      WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE {parent_filter}
+                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
             """, effective_limit, skip)
@@ -6228,39 +6230,118 @@ async def get_accounts_receivable_detailed(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Filtro para excluir contas PAI de parcelamentos (evita duplicacao)
-        filter_no_parent = """
-            AND is_active = true
-            AND (
-                parent_id IS NOT NULL
-                OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
-            )
-        """
+        # Filtro SQL inline para excluir contas PAI de parcelamentos (evita duplicacao)
+        # SEGURANCA: Queries sem concatenacao de strings - SQL puro parametrizado
 
         # Contagens (excluindo contas PAI de parcelamentos)
-        count_total = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE 1=1 {filter_no_parent}") or 0
-        count_pending = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
-        count_paid = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE status::text IN ('paid', 'PAID') {filter_no_parent}") or 0
-        count_overdue = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND due_date < CURRENT_DATE {filter_no_parent}") or 0
+        count_total = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        count_pending = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        count_paid = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE status::text IN ('paid', 'PAID')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        count_overdue = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND due_date < CURRENT_DATE
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
 
         # Valores (excluindo contas PAI de parcelamentos)
-        amount_total = await conn.fetchval(f"SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable WHERE 1=1 {filter_no_parent}") or 0
-        amount_paid = await conn.fetchval(f"SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {filter_no_parent}") or 0
-        amount_balance = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
-        amount_overdue = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND due_date < CURRENT_DATE {filter_no_parent}") or 0
+        amount_total = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable
+            WHERE is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        amount_paid = await conn.fetchval("""
+            SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
+            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        amount_balance = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        amount_overdue = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND due_date < CURRENT_DATE
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
 
         # Ticket medio
         avg_ticket = float(amount_total) / float(count_total) if count_total > 0 else 0
 
         # Vencimentos (excluindo contas PAI de parcelamentos)
-        due_today_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
-        due_today_amount = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date = CURRENT_DATE AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        due_today_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE due_date = CURRENT_DATE
+            AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
 
-        due_week_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
-        due_week_amount = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        due_today_amount = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE due_date = CURRENT_DATE
+            AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
 
-        due_month_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
-        due_month_amount = await conn.fetchval(f"SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE) AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {filter_no_parent}") or 0
+        due_week_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7
+            AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        due_week_amount = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7
+            AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        due_month_count = await conn.fetchval("""
+            SELECT COUNT(*) FROM accounts_receivable
+            WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
+            AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
+
+        due_month_amount = await conn.fetchval("""
+            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+            WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
+            AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            AND is_active = true
+            AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+        """) or 0
 
         # Percentuais
         pct_paid = (float(count_paid) / float(count_total) * 100) if count_total > 0 else 0
@@ -6962,40 +7043,60 @@ async def get_reports_cash_flow(
     conn = await get_tenant_connection(tenant)
 
     try:
-        date_filter_ar = ""
-        date_filter_ap = ""
-        params_ar = []
-        params_ap = []
+        # SEGURANCA: Queries condicionais sem concatenacao de strings
 
         if start_date and end_date:
-            date_filter_ar = "AND due_date BETWEEN $1 AND $2"
-            date_filter_ap = "AND due_date BETWEEN $1 AND $2"
-            params_ar = [start_date, end_date]
-            params_ap = [start_date, end_date]
+            # Entradas (recebimentos) com filtro de data
+            entradas = await conn.fetchval("""
+                SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
+                WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+                AND due_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
 
-        # Entradas (recebimentos)
-        entradas = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
-            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {date_filter_ar}
-        """, *params_ar) or 0
+            # Saidas (pagamentos) com filtro de data
+            saidas = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+                AND due_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
 
-        # Saidas (pagamentos)
-        saidas = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
-            WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL') {date_filter_ap}
-        """, *params_ap) or 0
+            # Previsao de entradas com filtro de data
+            previsao_entradas = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                AND due_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
 
-        # Previsao de entradas
-        previsao_entradas = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {date_filter_ar}
-        """, *params_ar) or 0
+            # Previsao de saidas com filtro de data
+            previsao_saidas = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                AND due_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
+        else:
+            # Entradas (recebimentos) sem filtro de data
+            entradas = await conn.fetchval("""
+                SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
+                WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+            """) or 0
 
-        # Previsao de saidas
-        previsao_saidas = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
-            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') {date_filter_ap}
-        """, *params_ap) or 0
+            # Saidas (pagamentos) sem filtro de data
+            saidas = await conn.fetchval("""
+                SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+            """) or 0
+
+            # Previsao de entradas sem filtro de data
+            previsao_entradas = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            """) or 0
+
+            # Previsao de saidas sem filtro de data
+            previsao_saidas = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+            """) or 0
 
         return {
             "data": {
@@ -7022,22 +7123,30 @@ async def get_reports_dre(
     conn = await get_tenant_connection(tenant)
 
     try:
-        date_filter = ""
-        params = []
+        # SEGURANCA: Queries condicionais sem concatenacao de strings
+
         if start_date and end_date:
-            date_filter = "AND sale_date BETWEEN $1 AND $2"
-            params = [start_date, end_date]
+            # Receitas (vendas) com filtro de data
+            receita_bruta = await conn.fetchval("""
+                SELECT COALESCE(SUM(total_amount), 0) FROM sales
+                WHERE sale_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
 
-        # Receitas (vendas)
-        receita_bruta = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(total_amount), 0) FROM sales WHERE 1=1 {date_filter}
-        """, *params) or 0
+            # Custos (compras) com filtro de data
+            custos = await conn.fetchval("""
+                SELECT COALESCE(SUM(total_amount), 0) FROM purchases
+                WHERE purchase_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
+        else:
+            # Receitas (vendas) sem filtro de data
+            receita_bruta = await conn.fetchval("""
+                SELECT COALESCE(SUM(total_amount), 0) FROM sales
+            """) or 0
 
-        # Custos (compras)
-        custos = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(total_amount), 0) FROM purchases
-            WHERE 1=1 {date_filter.replace('sale_date', 'purchase_date')}
-        """, *params) or 0
+            # Custos (compras) sem filtro de data
+            custos = await conn.fetchval("""
+                SELECT COALESCE(SUM(total_amount), 0) FROM purchases
+            """) or 0
 
         lucro_bruto = float(receita_bruta) - float(custos)
 
@@ -7149,23 +7258,38 @@ async def get_reports_forecast(
     conn = await get_tenant_connection(tenant)
 
     try:
-        date_filter = ""
-        params = []
+        # SEGURANCA: Queries condicionais sem concatenacao de strings
+
         if start_date and end_date:
-            date_filter = "AND due_date BETWEEN $1 AND $2"
-            params = [start_date, end_date]
+            # A receber previsto com filtro de data
+            a_receber = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                AND is_active = true
+                AND due_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
 
-        # A receber previsto
-        a_receber = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
-            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true {date_filter}
-        """, *params) or 0
+            # A pagar previsto com filtro de data
+            a_pagar = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                AND is_active = true
+                AND due_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
+        else:
+            # A receber previsto sem filtro de data
+            a_receber = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                AND is_active = true
+            """) or 0
 
-        # A pagar previsto
-        a_pagar = await conn.fetchval(f"""
-            SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
-            WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true {date_filter}
-        """, *params) or 0
+            # A pagar previsto sem filtro de data
+            a_pagar = await conn.fetchval("""
+                SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
+                WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                AND is_active = true
+            """) or 0
 
         return {
             "data": {
@@ -7192,15 +7316,19 @@ async def get_reports_management(
         # Clientes
         total_customers = await conn.fetchval("SELECT COUNT(*) FROM customers WHERE deleted_at IS NULL") or 0
 
-        # Vendas do periodo
-        date_filter = ""
-        params = []
+        # Vendas do periodo - SEGURANCA: Queries condicionais sem concatenacao
         if start_date and end_date:
-            date_filter = "AND sale_date BETWEEN $1 AND $2"
-            params = [start_date, end_date]
-
-        total_sales = await conn.fetchval(f"SELECT COALESCE(SUM(total_amount), 0) FROM sales WHERE 1=1 {date_filter}", *params) or 0
-        count_sales = await conn.fetchval(f"SELECT COUNT(*) FROM sales WHERE 1=1 {date_filter}", *params) or 0
+            total_sales = await conn.fetchval("""
+                SELECT COALESCE(SUM(total_amount), 0) FROM sales
+                WHERE sale_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
+            count_sales = await conn.fetchval("""
+                SELECT COUNT(*) FROM sales
+                WHERE sale_date BETWEEN $1 AND $2
+            """, start_date, end_date) or 0
+        else:
+            total_sales = await conn.fetchval("SELECT COALESCE(SUM(total_amount), 0) FROM sales") or 0
+            count_sales = await conn.fetchval("SELECT COUNT(*) FROM sales") or 0
 
         # A receber
         total_receivable = await conn.fetchval("""
