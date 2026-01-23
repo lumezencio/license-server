@@ -5782,10 +5782,11 @@ async def create_user(
         if existing:
             raise HTTPException(status_code=400, detail="Email ja cadastrado")
 
-        # Gera ID e hash da senha
+        # Gera ID e hash da senha - SEGURANCA: Usar bcrypt
+        import bcrypt as bcrypt_lib
         user_id = str(uuid.uuid4())
         password = user_data.get("password", "123456")
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        password_hash = bcrypt_lib.hashpw(password.encode(), bcrypt_lib.gensalt(12)).decode()
 
         # Insere usuario - inclui TODAS as colunas NOT NULL do schema legado
         row = await conn.fetchrow("""
@@ -5874,7 +5875,9 @@ async def update_user(
             param_index += 1
 
         if "password" in user_data and user_data["password"]:
-            password_hash = hashlib.sha256(user_data["password"].encode()).hexdigest()
+            # SEGURANCA: Usar bcrypt para hash de senha
+            import bcrypt as bcrypt_lib
+            password_hash = bcrypt_lib.hashpw(user_data["password"].encode(), bcrypt_lib.gensalt(12)).decode()
             update_fields.append(f"hashed_password = ${param_index}")
             values.append(password_hash)
             param_index += 1

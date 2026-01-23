@@ -161,18 +161,16 @@ async def verify_tenant_user(
                 logger.info(f"Usuario inativo: {email}")
                 return None
 
-            # Verifica senha - tenta SHA256 primeiro (novos tenants), depois bcrypt (legado)
+            # SEGURANCA: Verificacao de senha com suporte dual (bcrypt preferido, SHA256 legado)
+            # Migração automática: SHA256 -> bcrypt após login bem-sucedido
+            import bcrypt as bcrypt_lib
             password_valid = False
-            password_hash_sha256 = hashlib.sha256(password.encode()).hexdigest()
+            needs_migration = False
 
-            if user['hashed_password'] == password_hash_sha256:
-                password_valid = True
-                logger.info(f"Senha validada via SHA256 para: {email}")
-            else:
-                # Tenta bcrypt para usuarios legados
-                import bcrypt
+            # 1. Tenta bcrypt primeiro (formato seguro)
+            if user['hashed_password'].startswith('$2b$') or user['hashed_password'].startswith('$2a$'):
                 try:
-                    password_valid = bcrypt.checkpw(
+                    password_valid = bcrypt_lib.checkpw(
                         password.encode(),
                         user['hashed_password'].encode()
                     )
@@ -180,10 +178,28 @@ async def verify_tenant_user(
                         logger.info(f"Senha validada via bcrypt para: {email}")
                 except Exception:
                     password_valid = False
+            else:
+                # 2. Fallback para SHA256 (legado - será migrado)
+                password_hash_sha256 = hashlib.sha256(password.encode()).hexdigest()
+                if user['hashed_password'] == password_hash_sha256:
+                    password_valid = True
+                    needs_migration = True
+                    logger.info(f"Senha validada via SHA256 (legado) para: {email} - será migrada para bcrypt")
 
             if not password_valid:
                 logger.info(f"Senha invalida para: {email}")
                 return None
+
+            # 3. Migração automática SHA256 -> bcrypt
+            if needs_migration:
+                try:
+                    new_hash = bcrypt_lib.hashpw(password.encode(), bcrypt_lib.gensalt(12)).decode()
+                    await conn.execute("""
+                        UPDATE users SET hashed_password = $1, updated_at = $2 WHERE id = $3
+                    """, new_hash, datetime.utcnow(), user['id'])
+                    logger.info(f"[SECURITY-MIGRATION] Senha migrada SHA256->bcrypt para user_id={user['id']}")
+                except Exception as e:
+                    logger.warning(f"[SECURITY-MIGRATION] Falha ao migrar senha para bcrypt: {e}")
 
             # Atualiza last_login_at
             try:
@@ -598,12 +614,15 @@ async def change_tenant_password(
         )
 
         try:
-            new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
+            # SEGURANCA: Usar bcrypt para novo hash de senha
+            import bcrypt as bcrypt_lib
+            new_hash = bcrypt_lib.hashpw(data.new_password.encode(), bcrypt_lib.gensalt(12)).decode()
             await conn.execute("""
                 UPDATE users
                 SET hashed_password = $1, must_change_password = FALSE, updated_at = $2
                 WHERE email = $3
             """, new_hash, datetime.utcnow(), email.lower())
+            logger.info(f"[SECURITY] Senha alterada com bcrypt para: {email}")
 
         finally:
             await conn.close()
@@ -930,8 +949,9 @@ async def reset_password(
             database=found_tenant.database_name
         )
         try:
-            # Hash da nova senha (SHA256 para novos tenants)
-            new_hash = hashlib.sha256(new_password.encode()).hexdigest()
+            # SEGURANCA: Hash da nova senha com bcrypt (mais seguro que SHA256)
+            import bcrypt as bcrypt_lib
+            new_hash = bcrypt_lib.hashpw(new_password.encode(), bcrypt_lib.gensalt(12)).decode()
 
             await conn.execute("""
                 UPDATE users
@@ -942,6 +962,7 @@ async def reset_password(
                     updated_at = $2
                 WHERE email = $3
             """, new_hash, datetime.utcnow(), found_user_email)
+            logger.info(f"[SECURITY] Senha redefinida com bcrypt para: {found_user_email}")
         finally:
             await conn.close()
     except Exception as e:

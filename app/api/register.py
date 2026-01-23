@@ -324,8 +324,9 @@ async def register_trial(
     logger.info(f"Tenant code gerado: {tenant_code} (produto: {request.product_code})")
     logger.info(f"Database: {database_name}, User: {database_user}")
 
-    # Hash da senha inicial (CPF/CNPJ)
-    initial_password_hash = hashlib.sha256(request.document.encode()).hexdigest()
+    # Hash da senha inicial (CPF/CNPJ) - SEGURANCA: Usar bcrypt
+    import bcrypt as bcrypt_lib
+    initial_password_hash = bcrypt_lib.hashpw(request.document.encode(), bcrypt_lib.gensalt(12)).decode()
 
     # 4. Calcula data de expiração do trial (30 dias)
     trial_expires_at = datetime.utcnow() + timedelta(days=30)
