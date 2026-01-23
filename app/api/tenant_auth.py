@@ -82,6 +82,7 @@ class TenantLoginRequest(BaseModel):
     """Request de login multi-tenant"""
     email: EmailStr
     password: str
+    product_code: Optional[str] = None  # Codigo do produto (enterprise, diario, condotech)
 
 
 class TenantLoginResponse(BaseModel):
@@ -241,20 +242,26 @@ async def tenant_login(
         )
 
     # 1. Busca tenant pelo email principal
-    result = await db.execute(
-        select(Tenant).where(Tenant.email == email)
-    )
+    # ISOLAMENTO POR PRODUTO: Filtra por product_code se informado
+    query = select(Tenant).where(Tenant.email == email)
+    if login_data.product_code:
+        query = query.where(Tenant.product_code == login_data.product_code.lower())
+
+    result = await db.execute(query)
     tenant = result.scalar_one_or_none()
 
     # 1b. Se nao encontrou pelo email principal, busca usuario em todos os tenants ativos
     if not tenant:
         # Busca tenants ativos e provisionados
-        tenants_result = await db.execute(
-            select(Tenant).where(
-                Tenant.provisioned_at.isnot(None),
-                Tenant.status.in_([TenantStatus.ACTIVE.value, TenantStatus.TRIAL.value])
-            )
+        # ISOLAMENTO POR PRODUTO: Filtra por product_code se informado
+        tenant_query = select(Tenant).where(
+            Tenant.provisioned_at.isnot(None),
+            Tenant.status.in_([TenantStatus.ACTIVE.value, TenantStatus.TRIAL.value])
         )
+        if login_data.product_code:
+            tenant_query = tenant_query.where(Tenant.product_code == login_data.product_code.lower())
+
+        tenants_result = await db.execute(tenant_query)
         active_tenants = tenants_result.scalars().all()
 
         # Tenta encontrar o usuario em cada tenant

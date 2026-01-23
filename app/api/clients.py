@@ -159,6 +159,7 @@ async def delete_client(
       tenant, licenças e cliente. Operação irreversível!
     """
     from app.models import License, Tenant
+    from app.models.subscription import PaymentTransaction
     import asyncpg
     import logging
     import os
@@ -201,6 +202,16 @@ async def delete_client(
 
     if tenant:
         logger.info(f"[DELETE-CLIENT] Tenant encontrado: {tenant.tenant_code}")
+
+        # 1.5 Excluir transações de pagamento do tenant (FK constraint)
+        payments_result = await db.execute(
+            select(PaymentTransaction).where(PaymentTransaction.tenant_id == tenant.id)
+        )
+        payments = payments_result.scalars().all()
+        for payment in payments:
+            await db.delete(payment)
+        if payments:
+            logger.info(f"[DELETE-CLIENT] {len(payments)} transação(ões) de pagamento excluída(s)")
 
         # 2. Excluir banco de dados e usuário PostgreSQL do tenant
         try:

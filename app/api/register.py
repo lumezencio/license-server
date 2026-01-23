@@ -282,37 +282,46 @@ async def register_trial(
     Senha inicial: CPF/CNPJ (apenas números)
     """
 
-    logger.info(f"=== NOVO REGISTRO: {request.email} ({request.document}) ===")
+    logger.info(f"=== NOVO REGISTRO: {request.email} ({request.document}) - Produto: {request.product_code} ===")
 
-    # 1. Verifica se email já está cadastrado
+    # 1. Verifica se email já está cadastrado PARA ESTE PRODUTO
+    # Permite mesmo email em produtos diferentes (cada produto tem licença independente)
     result = await db.execute(
-        select(Tenant).where(Tenant.email == request.email)
+        select(Tenant).where(
+            Tenant.email == request.email,
+            Tenant.product_code == request.product_code
+        )
     )
     if result.scalar_one_or_none():
-        logger.warning(f"Email já cadastrado: {request.email}")
+        logger.warning(f"Email já cadastrado para {request.product_code}: {request.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Este e-mail já está cadastrado. Faça login ou recupere sua senha."
+            detail=f"Este e-mail já está cadastrado neste sistema. Faça login ou recupere sua senha."
         )
 
-    # 2. Verifica se documento já está cadastrado
+    # 2. Verifica se documento já está cadastrado PARA ESTE PRODUTO
     result = await db.execute(
-        select(Tenant).where(Tenant.document == request.document)
+        select(Tenant).where(
+            Tenant.document == request.document,
+            Tenant.product_code == request.product_code
+        )
     )
     if result.scalar_one_or_none():
-        logger.warning(f"Documento já cadastrado: {request.document}")
+        logger.warning(f"Documento já cadastrado para {request.product_code}: {request.document}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Este CPF/CNPJ já está cadastrado. Faça login ou recupere sua senha."
+            detail=f"Este CPF/CNPJ já está cadastrado neste sistema. Faça login ou recupere sua senha."
         )
 
     # 3. Gera dados do tenant
-    tenant_code = Tenant.generate_tenant_code(request.document)
-    database_name = Tenant.generate_database_name(request.document)
-    database_user = Tenant.generate_database_user(request.document)
+    # Para produtos diferentes do enterprise, adiciona sufixo para evitar conflitos
+    product_suffix = "" if request.product_code == "enterprise" else f"_{request.product_code}"
+    tenant_code = Tenant.generate_tenant_code(request.document) + product_suffix
+    database_name = Tenant.generate_database_name(request.document) + product_suffix
+    database_user = Tenant.generate_database_user(request.document) + product_suffix
     database_password = Tenant.generate_database_password()
 
-    logger.info(f"Tenant code gerado: {tenant_code}")
+    logger.info(f"Tenant code gerado: {tenant_code} (produto: {request.product_code})")
     logger.info(f"Database: {database_name}, User: {database_user}")
 
     # Hash da senha inicial (CPF/CNPJ)
