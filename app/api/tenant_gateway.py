@@ -832,6 +832,15 @@ async def create_customer(
         # Adiciona campo name para compatibilidade
         result["name"] = f"{result.get('first_name', '')} {result.get('last_name', '')}".strip()
         return result
+    except asyncpg.UniqueViolationError as e:
+        # Trata erros de duplicidade de forma amigavel
+        error_msg = str(e)
+        if "email" in error_msg.lower() or "ix_customers_email" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Ja existe um cliente cadastrado com este email.")
+        elif "cpf_cnpj" in error_msg.lower() or "customers_cpf_cnpj" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Ja existe um cliente cadastrado com este CPF/CNPJ.")
+        else:
+            raise HTTPException(status_code=400, detail="Ja existe um cliente cadastrado com estes dados.")
     except Exception as e:
         logger.error(f"Erro ao criar cliente: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -912,6 +921,15 @@ async def update_customer(
         return result
     except HTTPException:
         raise
+    except asyncpg.UniqueViolationError as e:
+        # Trata erros de duplicidade de forma amigavel
+        error_msg = str(e)
+        if "email" in error_msg.lower() or "ix_customers_email" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Ja existe um cliente cadastrado com este email.")
+        elif "cpf_cnpj" in error_msg.lower() or "customers_cpf_cnpj" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="Ja existe um cliente cadastrado com este CPF/CNPJ.")
+        else:
+            raise HTTPException(status_code=400, detail="Ja existe um cliente cadastrado com estes dados.")
     except Exception as e:
         logger.error(f"Erro ao atualizar cliente: {e}")
         raise HTTPException(status_code=500, detail=str(e))
