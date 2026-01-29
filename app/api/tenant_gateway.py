@@ -800,8 +800,8 @@ async def create_customer(
             RETURNING *
         """,
             customer_id,
-            customer.first_name or "",
-            customer.last_name or "",
+            customer.first_name if customer.first_name else None,
+            customer.last_name if customer.last_name else None,
             customer.company_name,
             customer.trade_name,
             doc,
@@ -825,12 +825,13 @@ async def create_customer(
             customer.notes,
             customer.credit_limit or 0,
             customer.payment_term_days or 30,
-            customer.is_active
+            customer.is_active if customer.is_active is not None else True
         )
 
         result = row_to_dict(row)
-        # Adiciona campo name para compatibilidade
-        result["name"] = f"{result.get('first_name', '')} {result.get('last_name', '')}".strip()
+        # Adiciona campo name para compatibilidade (PF usa nome, PJ usa razao social)
+        pf_name = f"{result.get('first_name') or ''} {result.get('last_name') or ''}".strip()
+        result["name"] = pf_name if pf_name else (result.get('company_name') or result.get('trade_name') or '')
         return result
     except asyncpg.UniqueViolationError as e:
         # Trata erros de duplicidade de forma amigavel
@@ -886,8 +887,8 @@ async def update_customer(
             RETURNING *
         """,
             customer_id,
-            customer.first_name or "",
-            customer.last_name or "",
+            customer.first_name if customer.first_name else None,
+            customer.last_name if customer.last_name else None,
             customer.company_name,
             customer.trade_name,
             doc,
@@ -911,13 +912,15 @@ async def update_customer(
             customer.notes,
             customer.credit_limit or 0,
             customer.payment_term_days or 30,
-            customer.is_active
+            customer.is_active if customer.is_active is not None else True
         )
 
         if not row:
             raise HTTPException(status_code=404, detail="Cliente nao encontrado")
         result = row_to_dict(row)
-        result["name"] = f"{result.get('first_name', '')} {result.get('last_name', '')}".strip()
+        # Adiciona campo name para compatibilidade (PF usa nome, PJ usa razao social)
+        pf_name = f"{result.get('first_name') or ''} {result.get('last_name') or ''}".strip()
+        result["name"] = pf_name if pf_name else (result.get('company_name') or result.get('trade_name') or '')
         return result
     except HTTPException:
         raise
