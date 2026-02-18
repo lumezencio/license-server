@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Building2, Search, Eye, RefreshCw, CheckCircle, XCircle,
-  Clock, Database, Package, BookOpen, Briefcase, Filter
+  Clock, Database, Package, BookOpen, Briefcase, Filter,
+  MessageCircle, Home
 } from 'lucide-react';
 import {
   Card, CardContent, Badge, LoadingSpinner, Button, Input
@@ -44,6 +45,8 @@ export default function Tenants() {
     total: tenants.length,
     enterprise: tenants.filter(t => t.product_code === 'enterprise').length,
     diario: tenants.filter(t => t.product_code === 'diario').length,
+    botwhatsapp: tenants.filter(t => t.product_code === 'botwhatsapp').length,
+    condotech: tenants.filter(t => t.product_code === 'condotech').length,
     active: tenants.filter(t => t.status === 'active').length,
     trial: tenants.filter(t => t.status === 'trial').length,
   };
@@ -70,14 +73,32 @@ export default function Tenants() {
         icon: Briefcase,
         color: 'blue',
         bgColor: 'bg-blue-500/20',
-        textColor: 'text-blue-400'
+        textColor: 'text-blue-400',
+        badgeVariant: 'info'
       },
       diario: {
         name: 'Diario Pessoal',
         icon: BookOpen,
         color: 'purple',
         bgColor: 'bg-purple-500/20',
-        textColor: 'text-purple-400'
+        textColor: 'text-purple-400',
+        badgeVariant: 'purple'
+      },
+      botwhatsapp: {
+        name: 'WhatsApp Bot',
+        icon: MessageCircle,
+        color: 'green',
+        bgColor: 'bg-green-500/20',
+        textColor: 'text-green-400',
+        badgeVariant: 'success'
+      },
+      condotech: {
+        name: 'CondoTech',
+        icon: Home,
+        color: 'orange',
+        bgColor: 'bg-orange-500/20',
+        textColor: 'text-orange-400',
+        badgeVariant: 'warning'
       }
     };
     return products[productCode] || {
@@ -85,7 +106,8 @@ export default function Tenants() {
       icon: Package,
       color: 'gray',
       bgColor: 'bg-gray-500/20',
-      textColor: 'text-gray-400'
+      textColor: 'text-gray-400',
+      badgeVariant: 'default'
     };
   };
 
@@ -128,18 +150,18 @@ export default function Tenants() {
       </div>
 
       {/* Stats por Produto */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card hover={false} className="cursor-pointer" onClick={() => setProductFilter('all')}>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        <Card hover={false} className="cursor-pointer" onClick={() => { setProductFilter('all'); setStatusFilter('all'); }}>
           <CardContent className="py-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
               <Building2 className="w-5 h-5 text-cyan-400" />
             </div>
             <p className="text-2xl sm:text-3xl font-bold text-white">{stats.total}</p>
-            <p className="text-white/50 text-xs sm:text-sm">Total de Tenants</p>
+            <p className="text-white/50 text-xs sm:text-sm">Total</p>
           </CardContent>
         </Card>
 
-        <Card hover={false} className="cursor-pointer border-blue-500/30" onClick={() => setProductFilter('enterprise')}>
+        <Card hover={false} className="cursor-pointer border-blue-500/30" onClick={() => { setProductFilter('enterprise'); setStatusFilter('all'); }}>
           <CardContent className="py-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
               <Briefcase className="w-5 h-5 text-blue-400" />
@@ -149,17 +171,37 @@ export default function Tenants() {
           </CardContent>
         </Card>
 
-        <Card hover={false} className="cursor-pointer border-purple-500/30" onClick={() => setProductFilter('diario')}>
+        <Card hover={false} className="cursor-pointer border-green-500/30" onClick={() => { setProductFilter('botwhatsapp'); setStatusFilter('all'); }}>
+          <CardContent className="py-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <MessageCircle className="w-5 h-5 text-green-400" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-bold text-green-400">{stats.botwhatsapp}</p>
+            <p className="text-white/50 text-xs sm:text-sm">WhatsApp Bot</p>
+          </CardContent>
+        </Card>
+
+        <Card hover={false} className="cursor-pointer border-orange-500/30" onClick={() => { setProductFilter('condotech'); setStatusFilter('all'); }}>
+          <CardContent className="py-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <Home className="w-5 h-5 text-orange-400" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-bold text-orange-400">{stats.condotech}</p>
+            <p className="text-white/50 text-xs sm:text-sm">CondoTech</p>
+          </CardContent>
+        </Card>
+
+        <Card hover={false} className="cursor-pointer border-purple-500/30" onClick={() => { setProductFilter('diario'); setStatusFilter('all'); }}>
           <CardContent className="py-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
               <BookOpen className="w-5 h-5 text-purple-400" />
             </div>
             <p className="text-2xl sm:text-3xl font-bold text-purple-400">{stats.diario}</p>
-            <p className="text-white/50 text-xs sm:text-sm">Diario Pessoal</p>
+            <p className="text-white/50 text-xs sm:text-sm">Diario</p>
           </CardContent>
         </Card>
 
-        <Card hover={false} className="cursor-pointer" onClick={() => setStatusFilter('trial')}>
+        <Card hover={false} className="cursor-pointer" onClick={() => { setProductFilter('all'); setStatusFilter('trial'); }}>
           <CardContent className="py-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
               <Clock className="w-5 h-5 text-amber-400" />
@@ -197,6 +239,22 @@ export default function Tenants() {
                 onClick={() => setProductFilter('enterprise')}
               >
                 Enterprise
+              </Button>
+              <Button
+                variant={productFilter === 'botwhatsapp' ? 'primary' : 'ghost'}
+                size="sm"
+                icon={MessageCircle}
+                onClick={() => setProductFilter('botwhatsapp')}
+              >
+                WhatsApp
+              </Button>
+              <Button
+                variant={productFilter === 'condotech' ? 'primary' : 'ghost'}
+                size="sm"
+                icon={Home}
+                onClick={() => setProductFilter('condotech')}
+              >
+                CondoTech
               </Button>
               <Button
                 variant={productFilter === 'diario' ? 'primary' : 'ghost'}
@@ -251,7 +309,7 @@ export default function Tenants() {
                       </TableCell>
                       <TableCell>
                         <Badge
-                          variant={product.color === 'blue' ? 'info' : product.color === 'purple' ? 'purple' : 'default'}
+                          variant={product.badgeVariant || 'default'}
                           size="sm"
                         >
                           {product.name}
@@ -342,7 +400,7 @@ export default function Tenants() {
                 </p>
                 <div className="flex items-center justify-center sm:justify-start gap-2 mt-2">
                   <Badge
-                    variant={getProductInfo(viewingTenant.product_code).color === 'blue' ? 'info' : 'purple'}
+                    variant={getProductInfo(viewingTenant.product_code).badgeVariant || 'default'}
                     size="sm"
                   >
                     {getProductInfo(viewingTenant.product_code).name}

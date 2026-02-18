@@ -411,23 +411,37 @@ async def register_trial(
 
     logger.info(f"Registros criados. Iniciando provisionamento em BACKGROUND...")
 
-    # 11. PROVISIONAMENTO ASSÍNCRONO EM BACKGROUND (não bloqueia a resposta)
-    # Usa asyncio.create_task para executar em paralelo
-    asyncio.create_task(
-        background_provision_tenant(
-            tenant_id=tenant.id,
-            tenant_code=tenant_code,
-            database_name=database_name,
-            database_user=database_user,
-            database_password=database_password,
-            admin_email=request.email,
-            admin_password=request.document,
-            admin_name=request.name,
-            product_code=request.product_code,
-            license_key=license_key,
-            client_id=client.id
+    # 11. PROVISIONAMENTO
+    # Produtos que gerenciam seu próprio banco (schema isolation, etc.)
+    # não precisam de provisioning pelo license-server
+    SELF_MANAGED_PRODUCTS = {"botwhatsapp"}
+
+    if request.product_code in SELF_MANAGED_PRODUCTS:
+        # Produto gerencia seu próprio ambiente - apenas ativa tenant e licença
+        tenant.status = TenantStatus.TRIAL.value
+        tenant.provisioned_at = datetime.utcnow()
+        tenant.activated_at = datetime.utcnow()
+        license.status = LicenseStatus.ACTIVE.value
+        license.activated_at = datetime.utcnow()
+        await db.commit()
+        logger.info(f"Tenant {tenant_code} ({request.product_code}) - produto self-managed, ativado diretamente")
+    else:
+        # PROVISIONAMENTO ASSÍNCRONO EM BACKGROUND (não bloqueia a resposta)
+        asyncio.create_task(
+            background_provision_tenant(
+                tenant_id=tenant.id,
+                tenant_code=tenant_code,
+                database_name=database_name,
+                database_user=database_user,
+                database_password=database_password,
+                admin_email=request.email,
+                admin_password=request.document,
+                admin_name=request.name,
+                product_code=request.product_code,
+                license_key=license_key,
+                client_id=client.id
+            )
         )
-    )
 
     # 12. Retorna sucesso IMEDIATAMENTE (provisionamento continua em background)
     # Usa URL do produto correto
