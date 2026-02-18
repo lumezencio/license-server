@@ -1982,6 +1982,429 @@ ON CONFLICT DO NOTHING;
 """
 
 # =====================================================
+# WHATSAPP BOT MANAGER - SISTEMA DE BOT WHATSAPP
+# =====================================================
+BOTWHATSAPP_SCHEMA_SQL = """
+-- =====================================================
+-- TABELA DE USUÁRIOS (USERS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Dados de login
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    -- Perfil
+    avatar_url TEXT,
+    phone VARCHAR(20),
+    -- Permissões (admin, manager, user, viewer)
+    role VARCHAR(50) DEFAULT 'user',
+    permissions JSONB,
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    is_verified BOOLEAN DEFAULT FALSE NOT NULL,
+    -- Verificação de email
+    verification_token VARCHAR(255),
+    verification_sent_at TIMESTAMP WITH TIME ZONE,
+    -- Reset de senha
+    reset_token VARCHAR(255),
+    reset_token_expires_at TIMESTAMP WITH TIME ZONE,
+    -- Preferências
+    preferences TEXT,
+    language VARCHAR(10) DEFAULT 'pt-BR',
+    timezone VARCHAR(50) DEFAULT 'America/Sao_Paulo',
+    -- Tracking
+    last_login_at TIMESTAMP WITH TIME ZONE,
+    last_login_ip VARCHAR(45),
+    login_count INTEGER DEFAULT 0,
+    -- Flag para trocar senha
+    must_change_password BOOLEAN DEFAULT TRUE
+);
+
+-- =====================================================
+-- CONTAS WHATSAPP (WHATSAPP_ACCOUNTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS whatsapp_accounts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Dados do WhatsApp Business API / Evolution API
+    phone_number VARCHAR(20) NOT NULL,
+    phone_number_id VARCHAR(50) NOT NULL,
+    business_account_id VARCHAR(50) NOT NULL,
+    -- Nome da instância Evolution API
+    instance_name VARCHAR(100),
+    -- Token de acesso
+    access_token TEXT NOT NULL,
+    -- Webhook
+    webhook_verify_token VARCHAR(255),
+    webhook_url TEXT,
+    -- Perfil do negócio
+    display_name VARCHAR(255),
+    about TEXT,
+    profile_picture_url TEXT,
+    -- Métricas da Meta
+    quality_rating VARCHAR(20),
+    messaging_limit VARCHAR(50),
+    -- Status (connected, disconnected, connecting, error)
+    status VARCHAR(50) DEFAULT 'disconnected',
+    last_connected_at TIMESTAMP WITH TIME ZONE,
+    error_message TEXT,
+    -- QR Code (Evolution API)
+    qr_code TEXT,
+    qr_code_expires_at TIMESTAMP WITH TIME ZONE
+);
+
+-- =====================================================
+-- CONTATOS (CONTACTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS contacts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Identificação WhatsApp
+    whatsapp_id VARCHAR(50) UNIQUE NOT NULL,
+    phone_number VARCHAR(20) NOT NULL,
+    -- Dados do contato
+    name VARCHAR(255),
+    email VARCHAR(255),
+    profile_picture_url TEXT,
+    -- Organização
+    tags TEXT[] DEFAULT '{}',
+    custom_fields JSONB DEFAULT '{}',
+    notes TEXT,
+    -- Status
+    is_blocked BOOLEAN DEFAULT FALSE,
+    is_subscribed BOOLEAN DEFAULT TRUE,
+    opted_out_at TIMESTAMP WITH TIME ZONE,
+    -- Métricas
+    total_messages INTEGER DEFAULT 0,
+    last_message_at TIMESTAMP WITH TIME ZONE,
+    first_message_at TIMESTAMP WITH TIME ZONE
+);
+
+-- =====================================================
+-- CONVERSAS (CONVERSATIONS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS conversations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    whatsapp_account_id UUID NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+    assigned_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    -- Status (active, waiting, closed, archived)
+    status VARCHAR(50) DEFAULT 'active',
+    -- Bot state
+    current_menu_node_id VARCHAR(100),
+    context_data JSONB DEFAULT '{}',
+    is_bot_active BOOLEAN DEFAULT TRUE,
+    -- Métricas
+    unread_count INTEGER DEFAULT 0,
+    message_count INTEGER DEFAULT 0,
+    -- Timestamps
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_message_at TIMESTAMP WITH TIME ZONE,
+    last_bot_message_at TIMESTAMP WITH TIME ZONE,
+    last_human_message_at TIMESTAMP WITH TIME ZONE,
+    closed_at TIMESTAMP WITH TIME ZONE
+);
+
+-- =====================================================
+-- MENSAGENS (MESSAGES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    -- ID do WhatsApp
+    whatsapp_message_id VARCHAR(100),
+    -- Direção e tipo (inbound/outbound)
+    direction VARCHAR(10) NOT NULL,
+    message_type VARCHAR(50) NOT NULL,
+    -- Conteúdo (JSON)
+    content JSONB NOT NULL,
+    -- Contexto (resposta a outra mensagem)
+    reply_to_message_id VARCHAR(100),
+    -- Status de entrega (pending, sent, delivered, read, failed)
+    status VARCHAR(50) DEFAULT 'pending',
+    error_code VARCHAR(50),
+    error_message TEXT,
+    -- Timestamps de status
+    sent_at TIMESTAMP WITH TIME ZONE,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    read_at TIMESTAMP WITH TIME ZONE,
+    failed_at TIMESTAMP WITH TIME ZONE,
+    -- Metadata
+    is_from_bot BOOLEAN DEFAULT FALSE,
+    triggered_by_flow_id UUID
+);
+
+-- =====================================================
+-- TEMPLATES DE MENSAGEM (MESSAGE_TEMPLATES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS message_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamento
+    whatsapp_account_id UUID NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+    -- Dados do template
+    template_id VARCHAR(100) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    -- Categoria e idioma
+    category VARCHAR(50),
+    language VARCHAR(10) DEFAULT 'pt_BR',
+    -- Status de aprovação (APPROVED, PENDING, REJECTED)
+    status VARCHAR(50),
+    rejected_reason TEXT,
+    -- Componentes do template
+    components JSONB DEFAULT '{}',
+    -- Exemplo de preenchimento
+    example_content JSONB
+);
+
+-- =====================================================
+-- BROADCASTS (ENVIO EM MASSA)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS broadcasts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Identificação
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    -- Conteúdo
+    template_id UUID,
+    message_content JSONB,
+    -- Seleção de destinatários (tags, contacts, all, filter, segment)
+    target_type VARCHAR(50) DEFAULT 'tags',
+    target_tags TEXT[],
+    target_contacts UUID[],
+    target_filter JSONB,
+    target_segment_id UUID,
+    -- Agendamento
+    scheduled_at TIMESTAMP WITH TIME ZONE,
+    timezone VARCHAR(50) DEFAULT 'America/Sao_Paulo',
+    -- Status (draft, scheduled, queued, sending, paused, completed, cancelled, failed)
+    status VARCHAR(50) DEFAULT 'draft',
+    -- Configurações de envio
+    send_rate INTEGER DEFAULT 30,
+    respect_24h_window BOOLEAN DEFAULT TRUE,
+    -- Métricas
+    total_recipients INTEGER DEFAULT 0,
+    sent_count INTEGER DEFAULT 0,
+    delivered_count INTEGER DEFAULT 0,
+    read_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    skipped_count INTEGER DEFAULT 0,
+    -- Timestamps de execução
+    started_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    paused_at TIMESTAMP WITH TIME ZONE,
+    -- Criação
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- =====================================================
+-- LOGS DE BROADCAST (BROADCAST_LOGS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS broadcast_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    broadcast_id UUID NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+    contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+    -- Status (pending, sent, delivered, read, failed, skipped)
+    status VARCHAR(50) DEFAULT 'pending',
+    error_code VARCHAR(50),
+    error_message TEXT,
+    -- ID do WhatsApp
+    whatsapp_message_id VARCHAR(100),
+    -- Timestamps
+    sent_at TIMESTAMP WITH TIME ZONE,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    read_at TIMESTAMP WITH TIME ZONE,
+    failed_at TIMESTAMP WITH TIME ZONE
+);
+
+-- =====================================================
+-- SEGMENTOS (SEGMENTS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS segments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Dados
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    -- Regras de filtro
+    filter_rules JSONB NOT NULL DEFAULT '[]',
+    -- Métricas
+    contact_count INTEGER DEFAULT 0,
+    -- Configurações
+    is_dynamic BOOLEAN DEFAULT TRUE,
+    last_refreshed_at TIMESTAMP WITH TIME ZONE,
+    -- Criação
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- =====================================================
+-- FLUXOS DE MENU/BOT (MENU_FLOWS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS menu_flows (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Identificação
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    -- Trigger (keyword, regex, default, first_message, button, menu_option)
+    trigger_type VARCHAR(50) DEFAULT 'keyword',
+    trigger_value VARCHAR(255),
+    -- Status
+    is_default BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    -- Estrutura do fluxo (JSON com todos os nós e conexões)
+    flow_data JSONB DEFAULT '{}',
+    -- Versionamento
+    version INTEGER DEFAULT 1,
+    published_version INTEGER,
+    published_at TIMESTAMP WITH TIME ZONE,
+    -- Métricas
+    execution_count INTEGER DEFAULT 0,
+    completion_count INTEGER DEFAULT 0,
+    -- Criação
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- =====================================================
+-- RESPOSTAS AUTOMÁTICAS (AUTO_RESPONSES)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS auto_responses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Identificação
+    name VARCHAR(255) NOT NULL,
+    -- Trigger (contains, exact, starts_with, ends_with, regex)
+    trigger_keywords TEXT[] NOT NULL,
+    trigger_type VARCHAR(50) DEFAULT 'contains',
+    case_sensitive BOOLEAN DEFAULT FALSE,
+    -- Resposta
+    response_type VARCHAR(50) DEFAULT 'text',
+    response_content JSONB NOT NULL,
+    -- Configurações
+    delay_seconds INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    priority INTEGER DEFAULT 0,
+    -- Horários de funcionamento
+    active_hours JSONB,
+    -- Métricas
+    trigger_count INTEGER DEFAULT 0,
+    last_triggered_at TIMESTAMP WITH TIME ZONE
+);
+
+-- =====================================================
+-- EXECUÇÕES DE FLUXO (FLOW_EXECUTIONS)
+-- =====================================================
+CREATE TABLE IF NOT EXISTS flow_executions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Relacionamentos
+    flow_id UUID NOT NULL REFERENCES menu_flows(id) ON DELETE CASCADE,
+    conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    -- Estado atual
+    current_node_id VARCHAR(100) NOT NULL,
+    status VARCHAR(50) DEFAULT 'running',
+    -- Variáveis coletadas
+    variables JSONB DEFAULT '{}',
+    -- Histórico de nós visitados
+    visited_nodes TEXT[] DEFAULT '{}',
+    -- Timestamps
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    last_interaction_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =====================================================
+-- ÍNDICES PARA PERFORMANCE - BOTWHATSAPP
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_accounts_phone ON whatsapp_accounts(phone_number);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_accounts_instance ON whatsapp_accounts(instance_name);
+CREATE INDEX IF NOT EXISTS idx_contacts_whatsapp_id ON contacts(whatsapp_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone_number);
+CREATE INDEX IF NOT EXISTS idx_contacts_tags ON contacts USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_conversations_contact ON conversations(contact_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_account ON conversations(whatsapp_account_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
+CREATE INDEX IF NOT EXISTS idx_conversations_last_message ON conversations(last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_messages_whatsapp_id ON messages(whatsapp_message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts(status);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_scheduled ON broadcasts(scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_broadcast_logs_broadcast ON broadcast_logs(broadcast_id);
+CREATE INDEX IF NOT EXISTS idx_broadcast_logs_contact ON broadcast_logs(contact_id);
+CREATE INDEX IF NOT EXISTS idx_broadcast_logs_status ON broadcast_logs(status);
+CREATE INDEX IF NOT EXISTS idx_menu_flows_trigger ON menu_flows(trigger_type, trigger_value);
+CREATE INDEX IF NOT EXISTS idx_menu_flows_active ON menu_flows(is_active);
+CREATE INDEX IF NOT EXISTS idx_auto_responses_active ON auto_responses(is_active, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_flow_executions_flow ON flow_executions(flow_id);
+CREATE INDEX IF NOT EXISTS idx_flow_executions_conversation ON flow_executions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_flow_executions_status ON flow_executions(status);
+
+-- =====================================================
+-- TRIGGERS PARA UPDATED_AT
+-- =====================================================
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_whatsapp_accounts_updated_at ON whatsapp_accounts;
+CREATE TRIGGER update_whatsapp_accounts_updated_at BEFORE UPDATE ON whatsapp_accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_contacts_updated_at ON contacts;
+CREATE TRIGGER update_contacts_updated_at BEFORE UPDATE ON contacts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_broadcasts_updated_at ON broadcasts;
+CREATE TRIGGER update_broadcasts_updated_at BEFORE UPDATE ON broadcasts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_segments_updated_at ON segments;
+CREATE TRIGGER update_segments_updated_at BEFORE UPDATE ON segments
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_menu_flows_updated_at ON menu_flows;
+CREATE TRIGGER update_menu_flows_updated_at BEFORE UPDATE ON menu_flows
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_auto_responses_updated_at ON auto_responses;
+CREATE TRIGGER update_auto_responses_updated_at BEFORE UPDATE ON auto_responses
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_message_templates_updated_at ON message_templates;
+CREATE TRIGGER update_message_templates_updated_at BEFORE UPDATE ON message_templates
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+"""
+
+# =====================================================
 # MAPEAMENTO DE PRODUTOS PARA SCHEMAS
 # =====================================================
 PRODUCT_SCHEMAS = {
@@ -1989,6 +2412,7 @@ PRODUCT_SCHEMAS = {
     "tech-emp": TENANT_SCHEMA_SQL,
     "condotech": CONDOTECH_SCHEMA_SQL,
     "diario": DIARIO_SCHEMA_SQL,
+    "botwhatsapp": BOTWHATSAPP_SCHEMA_SQL,
 }
 
 def get_schema_for_product(product_code: str) -> str:

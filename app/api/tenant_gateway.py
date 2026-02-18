@@ -4701,12 +4701,15 @@ async def calculate_correction_factor(tipo_indice: str, data_inicial, data_final
     marco_ipca15 = date(2024, 9, 1)  # A partir de setembro/2024, usa IPCA-15
 
     if tipo_indice_lower == "ipca_e":
-        # Busca IPCA-E ate agosto/2024
-        dados_ipca_e = await fetch_bcb_index(
-            BCB_INDEX_CODES["ipca_e"],
-            primeiro_mes,
-            date(2024, 8, 31)
-        )
+        # Busca IPCA-E ate agosto/2024 - SOMENTE se primeiro_mes e anterior a setembro/2024
+        if primeiro_mes < marco_ipca15:
+            dados_ipca_e = await fetch_bcb_index(
+                BCB_INDEX_CODES["ipca_e"],
+                primeiro_mes,
+                date(2024, 8, 31)
+            )
+        else:
+            dados_ipca_e = []
         for item in dados_ipca_e:
             try:
                 data_str = item.get("data", "")
@@ -5350,7 +5353,7 @@ async def create_legal_calculation(
 
         # Juros de mora
         tipo_juros_mora = data_calculado.get("tipo_juros_mora", "nao_aplicar")
-        percentual_juros_mora_val = to_decimal(data_calculado.get("percentual_juros_mora"))
+        percentual_juros_mora_val = to_decimal(data_calculado.get("percentual_juros_mora")) or 0
         juros_mora_a_partir_de = data_calculado.get("juros_mora_a_partir_de", "vencimento")
         data_fixa_juros_mora = to_date(data_calculado.get("data_fixa_juros_mora"))
         aplicar_juros_mora_pro_rata = data_calculado.get("aplicar_juros_mora_pro_rata", False)

@@ -93,10 +93,23 @@ DEFAULT_PLANS = [
     {"code": "plan_360", "name": "Plano 360 Dias", "days": 360, "price": 300.00, "original_price": 420.00, "discount_percent": 29, "sort_order": 6},
 ]
 
+# Planos para WhatsApp Bot Manager
+BOTWHATSAPP_PLANS = [
+    {"code": "botwhatsapp_basico", "product_code": "BOTWHATSAPP", "name": "Básico", "days": 30, "price": 49.90, "original_price": 49.90, "discount_percent": 0, "sort_order": 1, "description": "1 instância WhatsApp, 1.000 msgs/mês, Fluxos ilimitados"},
+    {"code": "botwhatsapp_profissional", "product_code": "BOTWHATSAPP", "name": "Profissional", "days": 30, "price": 99.90, "original_price": 119.90, "discount_percent": 17, "sort_order": 2, "is_featured": True, "description": "3 instâncias WhatsApp, 5.000 msgs/mês, Fluxos ilimitados, Broadcasts"},
+    {"code": "botwhatsapp_empresarial", "product_code": "BOTWHATSAPP", "name": "Empresarial", "days": 30, "price": 199.90, "original_price": 249.90, "discount_percent": 20, "sort_order": 3, "description": "Instâncias ilimitadas, Mensagens ilimitadas, Suporte prioritário"},
+    {"code": "botwhatsapp_anual_basico", "product_code": "BOTWHATSAPP", "name": "Básico Anual", "days": 365, "price": 449.00, "original_price": 598.80, "discount_percent": 25, "sort_order": 4, "description": "1 instância WhatsApp, 1.000 msgs/mês (economia de 2 meses)"},
+    {"code": "botwhatsapp_anual_profissional", "product_code": "BOTWHATSAPP", "name": "Profissional Anual", "days": 365, "price": 899.00, "original_price": 1198.80, "discount_percent": 25, "sort_order": 5, "description": "3 instâncias WhatsApp, 5.000 msgs/mês (economia de 2 meses)"},
+    {"code": "botwhatsapp_anual_empresarial", "product_code": "BOTWHATSAPP", "name": "Empresarial Anual", "days": 365, "price": 1799.00, "original_price": 2398.80, "discount_percent": 25, "sort_order": 6, "description": "Ilimitado (economia de 2 meses)"},
+]
+
 
 async def ensure_plans_exist(db: AsyncSession):
     """Garante que os planos padrão existam no banco"""
-    for plan_data in DEFAULT_PLANS:
+    # Combina todos os planos de todos os produtos
+    all_plans = DEFAULT_PLANS + BOTWHATSAPP_PLANS
+
+    for plan_data in all_plans:
         result = await db.execute(
             select(SubscriptionPlan).where(SubscriptionPlan.code == plan_data["code"])
         )
@@ -105,8 +118,9 @@ async def ensure_plans_exist(db: AsyncSession):
         if not existing:
             plan = SubscriptionPlan(
                 code=plan_data["code"],
+                product_code=plan_data.get("product_code", "ENTERPRISE"),
                 name=plan_data["name"],
-                description=f"Assinatura por {plan_data['days']} dias",
+                description=plan_data.get("description", f"Assinatura por {plan_data['days']} dias"),
                 days=plan_data["days"],
                 price=plan_data["price"],
                 original_price=plan_data.get("original_price"),
@@ -116,7 +130,7 @@ async def ensure_plans_exist(db: AsyncSession):
                 is_active=True
             )
             db.add(plan)
-            logger.info(f"Plano {plan_data['code']} criado")
+            logger.info(f"Plano {plan_data['code']} criado para produto {plan_data.get('product_code', 'ENTERPRISE')}")
 
     await db.commit()
 
@@ -237,7 +251,12 @@ async def create_preference(
     base_url = request.return_url.rstrip('/') if request.return_url else settings.APP_URL
 
     # Define descrição baseada na aplicação
-    app_name = "Diario Pessoal" if "diario" in base_url.lower() else "Tech-EMP"
+    if "diario" in base_url.lower():
+        app_name = "Diario Pessoal"
+    elif "botwhatsapp" in base_url.lower():
+        app_name = "WhatsApp Bot Manager"
+    else:
+        app_name = "Tech-EMP"
 
     # Cria a preferência
     preference_data = {

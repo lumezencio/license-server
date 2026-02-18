@@ -7,7 +7,7 @@ import uuid
 import secrets
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Integer, Enum as SQLEnum, ForeignKey
+from sqlalchemy import Column, String, Boolean, DateTime, Text, Integer, Enum as SQLEnum, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import relationship
 
@@ -32,25 +32,36 @@ class Tenant(Base):
     Cada tenant tem seu próprio banco de dados isolado.
     """
     __tablename__ = "tenants"
+    __table_args__ = (
+        # Constraints compostas: mesmo cliente pode estar em múltiplos produtos
+        UniqueConstraint('tenant_code', 'product_code', name='uq_tenants_tenant_code_product'),
+        UniqueConstraint('document', 'product_code', name='uq_tenants_document_product'),
+        UniqueConstraint('email', 'product_code', name='uq_tenants_email_product'),
+        UniqueConstraint('database_name', 'product_code', name='uq_tenants_database_name_product'),
+        UniqueConstraint('subdomain', 'product_code', name='uq_tenants_subdomain_product'),
+        # Indexes simples para performance de busca
+        Index('ix_tenants_document', 'document'),
+        Index('ix_tenants_email', 'email'),
+        Index('ix_tenants_tenant_code', 'tenant_code'),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 
-    # Identificador único do tenant (usado para criar banco, subdomínio, etc)
-    # Formato: CPF/CNPJ sem pontos (apenas números) - garante unicidade
-    tenant_code = Column(String(20), unique=True, nullable=False, index=True)
+    # Identificador único do tenant (CPF/CNPJ, único por produto)
+    tenant_code = Column(String(100), nullable=False)
 
     # Dados do responsável/empresa
     name = Column(String(255), nullable=False)  # Nome completo ou razão social
     trade_name = Column(String(255))  # Nome fantasia
-    document = Column(String(20), unique=True, nullable=False, index=True)  # CPF ou CNPJ
-    email = Column(String(255), nullable=False, unique=True, index=True)
+    document = Column(String(20), nullable=False)  # CPF ou CNPJ
+    email = Column(String(255), nullable=False)
     phone = Column(String(20))
 
-    # Produto/Sistema
-    product_code = Column(String(50), default="enterprise")  # Código do produto (enterprise, condotech, etc.)
+    # Produto/Sistema (enterprise, diario, botwhatsapp, condotech)
+    product_code = Column(String(50), default="enterprise", nullable=False)
 
-    # Configurações do banco de dados
-    database_name = Column(String(100), unique=True)  # Nome do banco: cliente_{document}
+    # Configurações do banco de dados (único por produto)
+    database_name = Column(String(100))  # Nome do banco: cliente_{document}
     database_host = Column(String(255), default="localhost")
     database_port = Column(Integer, default=5432)
     database_user = Column(String(100))

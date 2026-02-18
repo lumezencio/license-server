@@ -314,11 +314,10 @@ async def register_trial(
         )
 
     # 3. Gera dados do tenant
-    # Para produtos diferentes do enterprise, adiciona sufixo para evitar conflitos
-    product_suffix = "" if request.product_code == "enterprise" else f"_{request.product_code}"
-    tenant_code = Tenant.generate_tenant_code(request.document) + product_suffix
-    database_name = Tenant.generate_database_name(request.document) + product_suffix
-    database_user = Tenant.generate_database_user(request.document) + product_suffix
+    # Constraints compostas (coluna, product_code) permitem mesmo documento em produtos diferentes
+    tenant_code = Tenant.generate_tenant_code(request.document)
+    database_name = Tenant.generate_database_name(request.document)
+    database_user = Tenant.generate_database_user(request.document)
     database_password = Tenant.generate_database_password()
 
     logger.info(f"Tenant code gerado: {tenant_code} (produto: {request.product_code})")
@@ -550,39 +549,49 @@ async def retry_provision(
 @router.get("/check-email/{email}")
 async def check_email_available(
     email: str,
+    product_code: str = "enterprise",
     db: AsyncSession = Depends(get_db)
 ):
-    """Verifica se um e-mail está disponível para cadastro"""
+    """Verifica se um e-mail está disponível para cadastro em um produto específico"""
     result = await db.execute(
-        select(Tenant).where(Tenant.email == email)
+        select(Tenant).where(
+            Tenant.email == email,
+            Tenant.product_code == product_code
+        )
     )
     exists = result.scalar_one_or_none() is not None
 
     return {
         "email": email,
+        "product_code": product_code,
         "available": not exists,
-        "message": "E-mail disponível" if not exists else "E-mail já cadastrado"
+        "message": "E-mail disponível" if not exists else "E-mail já cadastrado neste sistema"
     }
 
 
 @router.get("/check-document/{document}")
 async def check_document_available(
     document: str,
+    product_code: str = "enterprise",
     db: AsyncSession = Depends(get_db)
 ):
-    """Verifica se um CPF/CNPJ está disponível para cadastro"""
+    """Verifica se um CPF/CNPJ está disponível para cadastro em um produto específico"""
     import re
     numbers = re.sub(r'\D', '', document)
 
     result = await db.execute(
-        select(Tenant).where(Tenant.document == numbers)
+        select(Tenant).where(
+            Tenant.document == numbers,
+            Tenant.product_code == product_code
+        )
     )
     exists = result.scalar_one_or_none() is not None
 
     return {
         "document": numbers,
+        "product_code": product_code,
         "available": not exists,
-        "message": "Documento disponível" if not exists else "Documento já cadastrado"
+        "message": "Documento disponível" if not exists else "Documento já cadastrado neste sistema"
     }
 
 

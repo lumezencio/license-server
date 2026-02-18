@@ -61,6 +61,8 @@ class Settings(BaseSettings):
         "https://enterprise.softwarecorp.com.br",
         "https://www.softwarecorp.com.br",
         "https://softwarecorp.com.br",
+        "https://botwhatsapp.softwarecorp.com.br",
+        "https://api.botwhatsapp.softwarecorp.com.br",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:3000",
@@ -117,6 +119,12 @@ class Settings(BaseSettings):
             "app_url": "https://meu-diario.softwarecorp.com.br",
             "login_url": "https://meu-diario.softwarecorp.com.br/login",
             "name": "Meu-Diario",
+            "company": "SoftwareCorp"
+        },
+        "botwhatsapp": {
+            "app_url": "https://botwhatsapp.softwarecorp.com.br",
+            "login_url": "https://botwhatsapp.softwarecorp.com.br/login",
+            "name": "WhatsApp Bot Manager",
             "company": "SoftwareCorp"
         }
     }
