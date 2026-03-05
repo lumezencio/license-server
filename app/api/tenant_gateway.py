@@ -379,11 +379,14 @@ async def get_tenant_from_token(
             detail="Token sem tenant_code"
         )
 
-    # Busca tenant
+    # Busca tenant ativo (filtra duplicados inativos)
     result = await db.execute(
-        select(Tenant).where(Tenant.tenant_code == tenant_code)
+        select(Tenant).where(
+            Tenant.tenant_code == tenant_code,
+            Tenant.status.in_(["active", "trial"])
+        )
     )
-    tenant = result.scalar_one_or_none()
+    tenant = result.scalars().first()
 
     if not tenant:
         raise HTTPException(
@@ -800,8 +803,8 @@ async def create_customer(
             RETURNING *
         """,
             customer_id,
-            customer.first_name if customer.first_name else None,
-            customer.last_name if customer.last_name else None,
+            customer.first_name or "",
+            customer.last_name or "",
             customer.company_name,
             customer.trade_name,
             doc,
@@ -887,8 +890,8 @@ async def update_customer(
             RETURNING *
         """,
             customer_id,
-            customer.first_name if customer.first_name else None,
-            customer.last_name if customer.last_name else None,
+            customer.first_name or "",
+            customer.last_name or "",
             customer.company_name,
             customer.trade_name,
             doc,

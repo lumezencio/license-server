@@ -122,8 +122,8 @@ CREATE TABLE IF NOT EXISTS customers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Dados pessoais
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
+    first_name VARCHAR(100) NOT NULL DEFAULT '',
+    last_name VARCHAR(100) NOT NULL DEFAULT '',
     email VARCHAR(200),
     phone VARCHAR(20),
     mobile VARCHAR(20),
