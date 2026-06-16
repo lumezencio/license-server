@@ -432,9 +432,11 @@ def owner_filter(user: dict, alias: str = "", column: str = "created_by") -> str
 
     Regras (definidas com o cliente):
       - superadmin  -> ve TODOS os lancamentos do tenant (fragmento vazio).
-      - demais users -> ve APENAS os registros com created_by = seu user_id.
-                        Registros antigos (created_by NULL) NAO aparecem para
-                        eles (ficam visiveis somente ao superadmin).
+      - demais users -> ve os registros que ELE criou (created_by = seu user_id)
+                        E TAMBEM os registros antigos sem dono (created_by IS NULL),
+                        que sao anteriores ao controle de autoria (historico
+                        compartilhado). Os lancamentos NOVOS de outros usuarios
+                        (com created_by != ele) ficam ocultos.
 
     Seguranca: o user_id vem de um JWT assinado por nos e e validado como UUID
     antes de ser inlinado, portanto nao ha risco de SQL injection.
@@ -449,7 +451,7 @@ def owner_filter(user: dict, alias: str = "", column: str = "created_by") -> str
     if not _is_valid_uuid(uid):
         # Sem id valido no token -> nao retorna nada (seguranca: falha fechada)
         return " AND 1 = 0 "
-    return f" AND {prefix}{column} = '{uid}' "
+    return f" AND ({prefix}{column} = '{uid}' OR {prefix}{column} IS NULL) "
 
 
 def current_user_id(user: dict):

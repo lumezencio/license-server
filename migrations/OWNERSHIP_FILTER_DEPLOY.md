@@ -8,9 +8,14 @@ Data: 2026-06-16
 2. **Filtro por dono**:
    - **superadmin** = usuario com `role='superadmin'` (EXPLICITO; marcado na tela Usuarios)
      enxerga **TODOS** os lancamentos financeiros e calculos juridicos (incl. antigos).
-   - **demais usuarios** (admin/user/etc) enxergam **APENAS** o que eles proprios criaram.
-   - NOTA: a regra "dono = email de cadastro" foi REMOVIDA (2026-06-16) por gerar
-     superadmin inesperado; agora vale somente o role explicito.
+   - **demais usuarios** (admin/user/etc) enxergam o que **eles proprios criaram**
+     (created_by = id deles) **+ os registros antigos sem dono** (created_by NULL,
+     anteriores ao controle de autoria = historico compartilhado). Os lancamentos
+     NOVOS de outros usuarios ficam ocultos.
+   - NOTAS (2026-06-16): a regra "dono = email de cadastro" foi REMOVIDA (gerava
+     superadmin inesperado; agora vale somente role explicito). E os registros
+     antigos (created_by NULL) passaram a aparecer para todos, pois nao ha como
+     saber quem os criou e os usuarios estavam "perdendo" o proprio historico.
    - Registros **antigos** (sem `created_by`) ficam visiveis **somente ao superadmin**
      (decisao do cliente).
 
