@@ -707,7 +707,9 @@ CREATE TABLE IF NOT EXISTS purchases (
     accounts_payable_created BOOLEAN DEFAULT FALSE,
     -- Fiscal
     cfop VARCHAR(10),
-    nature_operation VARCHAR(100)
+    nature_operation VARCHAR(100),
+    -- Auditoria / controle de acesso por dono (superadmin ve tudo; demais veem so o proprio)
+    created_by VARCHAR(36)
 );
 
 -- =====================================================
@@ -782,7 +784,9 @@ CREATE TABLE IF NOT EXISTS accounts_receivable (
     -- Controle
     is_active BOOLEAN DEFAULT TRUE,
     -- Observações
-    notes TEXT
+    notes TEXT,
+    -- Auditoria / controle de acesso por dono (superadmin ve tudo; demais veem so o proprio)
+    created_by VARCHAR(36)
 );
 
 -- =====================================================
@@ -816,7 +820,9 @@ CREATE TABLE IF NOT EXISTS accounts_payable (
     installment_number INTEGER DEFAULT 0,
     total_installments INTEGER DEFAULT 1,
     -- Observações
-    notes TEXT
+    notes TEXT,
+    -- Auditoria / controle de acesso por dono (superadmin ve tudo; demais veem so o proprio)
+    created_by VARCHAR(36)
 );
 
 -- =====================================================

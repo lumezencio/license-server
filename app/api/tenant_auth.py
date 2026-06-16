@@ -218,6 +218,7 @@ async def verify_tenant_user(
                 "email": user['email'],
                 "name": user['full_name'] or '',
                 "is_admin": is_admin,
+                "role": role or 'user',
                 "must_change_password": user['must_change_password'] or False
             }
 
@@ -430,11 +431,23 @@ async def tenant_login(
     login_tracker.clear_attempts(client_ip, email)
 
     # 7. Gera token de acesso
+    # CONTROLE DE ACESSO POR DONO:
+    # - O "dono da conta" (usuario cujo email == email de cadastro do tenant) e' superadmin
+    #   e enxerga TODOS os lancamentos financeiros e calculos juridicos do tenant.
+    # - Os demais usuarios (admin/user) enxergam APENAS os registros que eles proprios criaram.
+    user_role = (user.get("role") or "user").lower()
+    tenant_owner_email = (tenant.email or "").lower()
+    is_superadmin = (
+        user_role == "superadmin"
+        or (tenant_owner_email and user["email"].lower() == tenant_owner_email)
+    )
     token_data = {
         "sub": user["email"],
         "tenant_code": tenant.tenant_code,
         "user_id": user["id"],
-        "is_admin": user["is_admin"]
+        "is_admin": user["is_admin"],
+        "role": user_role,
+        "is_superadmin": is_superadmin
     }
     access_token = create_access_token(
         data=token_data,

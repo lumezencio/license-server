@@ -404,10 +404,96 @@ async def get_tenant_from_token(
         "id": payload.get("user_id"),  # 'id' para compatibilidade com diario_gateway.py
         "email": payload.get("sub"),
         "user_id": payload.get("user_id"),
-        "is_admin": payload.get("is_admin", False)
+        "is_admin": payload.get("is_admin", False),
+        "role": (payload.get("role") or "user"),
+        # is_superadmin: dono da conta (ou role superadmin) ve TODOS os lancamentos.
+        # Tokens antigos (emitidos antes desta versao) nao tem o campo: nesse caso,
+        # cai no fallback is_admin para nao esconder dados de quem ja esta logado.
+        "is_superadmin": payload.get("is_superadmin", payload.get("is_admin", False)),
     }
 
     return tenant, user_data
+
+
+def _is_valid_uuid(value: str) -> bool:
+    """Valida se a string e um UUID valido (evita injecao ao inlinar created_by)."""
+    import uuid as _uuid
+    try:
+        _uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def owner_filter(user: dict, alias: str = "", column: str = "created_by") -> str:
+    """
+    Retorna um fragmento SQL para restringir os registros ao usuario logado,
+    EXCETO quando ele e superadmin (dono da conta), que enxerga tudo.
+
+    Regras (definidas com o cliente):
+      - superadmin  -> ve TODOS os lancamentos do tenant (fragmento vazio).
+      - demais users -> ve APENAS os registros com created_by = seu user_id.
+                        Registros antigos (created_by NULL) NAO aparecem para
+                        eles (ficam visiveis somente ao superadmin).
+
+    Seguranca: o user_id vem de um JWT assinado por nos e e validado como UUID
+    antes de ser inlinado, portanto nao ha risco de SQL injection.
+
+    O fragmento sempre comeca com " AND ..." para ser concatenado apos um WHERE
+    ja existente. Para queries sem WHERE, use "WHERE TRUE" + owner_filter(...).
+    """
+    if user.get("is_superadmin"):
+        return ""
+    uid = user.get("user_id")
+    prefix = f"{alias}." if alias else ""
+    if not _is_valid_uuid(uid):
+        # Sem id valido no token -> nao retorna nada (seguranca: falha fechada)
+        return " AND 1 = 0 "
+    return f" AND {prefix}{column} = '{uid}' "
+
+
+def current_user_id(user: dict):
+    """Retorna o user_id do token se for um UUID valido, senao None."""
+    uid = user.get("user_id")
+    return uid if _is_valid_uuid(uid) else None
+
+
+def owner_where(user: dict, alias: str = "", column: str = "created_by") -> str:
+    """
+    Igual a owner_filter, mas para agregados de tabela UNICA que NAO possuem
+    WHERE: retorna "" (superadmin) ou " WHERE created_by = '...' " (demais).
+    Use em: SELECT SUM(x) FROM tabela {owner_where(user)}
+    """
+    f = owner_filter(user, alias, column)
+    if not f:
+        return ""
+    # Troca o primeiro " AND " por " WHERE "
+    return " WHERE " + f.strip()[4:].strip() + " "
+
+
+# Cache de tenants cujas colunas de ownership ja foram garantidas nesta instancia.
+# Evita rodar os ALTER em toda requisicao (so na 1a apos restart por tenant).
+_ownership_ensured: set = set()
+
+
+async def ensure_ownership_columns(conn: asyncpg.Connection, tenant_code: str = "") -> None:
+    """
+    Garante (idempotente) que a coluna created_by existe nos lancamentos
+    financeiros e calculos juridicos. Necessario para que tenants antigos
+    (criados antes desta versao) nao quebrem ao usar o filtro por dono.
+    """
+    if tenant_code and tenant_code in _ownership_ensured:
+        return
+    # Cada ALTER e independente: tabela inexistente em um tenant nao impede as demais.
+    for table in ("accounts_receivable", "accounts_payable", "purchases", "sales", "legal_calculations"):
+        try:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)"
+            )
+        except Exception as e:
+            logger.warning(f"ensure_ownership_columns ({tenant_code}/{table}): {e}")
+    if tenant_code:
+        _ownership_ensured.add(tenant_code)
 
 
 async def get_tenant_connection(tenant: Tenant) -> asyncpg.Connection:
@@ -420,6 +506,8 @@ async def get_tenant_connection(tenant: Tenant) -> asyncpg.Connection:
             password=tenant.database_password,
             database=tenant.database_name
         )
+        # Garante colunas de ownership (uma vez por tenant apos restart)
+        await ensure_ownership_columns(conn, getattr(tenant, "tenant_code", ""))
         return conn
     except Exception as e:
         logger.error(f"Erro ao conectar ao banco do tenant {tenant.tenant_code}: {e}")
@@ -1734,21 +1822,24 @@ async def get_dashboard_stats(
             employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees")
 
         # Vendas do mes - schema legado usa total_amount em vez de total
-        sales_month = await conn.fetchval("""
+        sales_month = await conn.fetchval(f"""
             SELECT COALESCE(SUM(COALESCE(total_amount, 0)), 0) FROM sales
             WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
+            {owner_filter(user)}
         """)
 
         # Contas a receber pendentes - schema legado usa ENUM com valores UPPERCASE
-        receivables = await conn.fetchval("""
+        receivables = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - paid_amount), 0) FROM accounts_receivable
             WHERE status::text IN ('pending', 'PENDING')
+            {owner_filter(user)}
         """)
 
         # Contas a pagar pendentes - schema legado usa amount_paid em vez de paid_amount
-        payables = await conn.fetchval("""
+        payables = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING')
+            {owner_filter(user)}
         """)
 
         return {
@@ -1783,13 +1874,14 @@ async def list_sales(
 
         # Schema legado: customers usa first_name/last_name
         # CAST para VARCHAR para compatibilidade com tenant legado (UUID vs VARCHAR)
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT s.*,
                 COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                 COALESCE(e.first_name || ' ' || e.last_name, e.name) as seller_name
             FROM sales s
             LEFT JOIN customers c ON s.customer_id::text = c.id::text
             LEFT JOIN employees e ON s.seller_id::text = e.id::text
+            WHERE TRUE {owner_filter(user, "s")}
             ORDER BY s.sale_date DESC
             LIMIT $1 OFFSET $2
         """, limit, skip)
@@ -1953,9 +2045,9 @@ async def create_sale(
                 shipping_amount, icms_amount, pis_amount, cofins_amount, iss_amount,
                 total_amount, payment_method, payment_status, installments,
                 sale_status, is_refunded, is_stock_updated, version,
-                notes, sale_metadata, created_at, updated_at
+                notes, sale_metadata, created_by, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
             )
         """,
             sale_id, sale_number, sale_date,
@@ -1969,7 +2061,7 @@ async def create_sale(
             to_int(data.get("installments")) or 1,
             to_str(data.get("sale_status")) or "completed",
             False, False, 1,  # is_refunded, is_stock_updated, version
-            to_str(data.get("notes")), sale_metadata, now, now
+            to_str(data.get("notes")), sale_metadata, current_user_id(user), now, now
         )
 
         # Insere itens da venda e atualiza estoque
@@ -2069,9 +2161,9 @@ async def create_sale(
                         description, document_number, amount, paid_amount,
                         issue_date, due_date, payment_date, status, payment_method,
                         category, installment_number, total_installments, notes,
-                        created_at, updated_at
+                        created_by, created_at, updated_at
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
                     )
                 """,
                     receivable_id, customer_id, None,
@@ -2079,7 +2171,7 @@ async def create_sale(
                     total_amount, 0.0,
                     sale_date, due_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "VENDAS", 0, 1, to_str(data.get("notes")),
-                    now, now
+                    current_user_id(user), now, now
                 )
             else:
                 # Múltiplas parcelas - cria PAI + filhas
@@ -2094,9 +2186,9 @@ async def create_sale(
                         description, document_number, amount, paid_amount,
                         issue_date, due_date, payment_date, status, payment_method,
                         category, installment_number, total_installments, notes,
-                        created_at, updated_at
+                        created_by, created_at, updated_at
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
                     )
                 """,
                     parent_id, customer_id, None,
@@ -2104,7 +2196,7 @@ async def create_sale(
                     total_amount, 0.0,
                     sale_date, sale_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "VENDAS", 0, num_installments, to_str(data.get("notes")),
-                    now, now
+                    current_user_id(user), now, now
                 )
 
                 # Cria parcelas filhas
@@ -2119,9 +2211,9 @@ async def create_sale(
                             description, document_number, amount, paid_amount,
                             issue_date, due_date, payment_date, status, payment_method,
                             category, installment_number, total_installments, notes,
-                            created_at, updated_at
+                            created_by, created_at, updated_at
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
                         )
                     """,
                         installment_id, customer_id, parent_id,
@@ -2129,7 +2221,7 @@ async def create_sale(
                         amount, 0.0,
                         sale_date, due_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                         "VENDAS", i, num_installments, None,
-                        now, now
+                        current_user_id(user), now, now
                     )
 
         # Retorna a venda criada
@@ -2555,9 +2647,9 @@ async def convert_quotation_to_sale(
                 shipping_amount, icms_amount, pis_amount, cofins_amount, iss_amount,
                 total_amount, payment_method, payment_status, installments,
                 sale_status, is_refunded, is_stock_updated, version,
-                notes, created_at, updated_at
+                notes, created_by, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
             )
         """,
             sale_id, sale_number, now.date(),
@@ -2571,7 +2663,7 @@ async def convert_quotation_to_sale(
             quotation["installments"] or 1, "completed",
             False, False, 1,
             f"Convertido do orçamento {quotation['quotation_number']}",
-            now, now
+            current_user_id(user), now, now
         )
 
         # Copia itens e baixa estoque
@@ -2644,13 +2736,13 @@ async def convert_quotation_to_sale(
                         description, document_number, amount, paid_amount,
                         issue_date, due_date, status, payment_method,
                         category, installment_number, total_installments,
-                        created_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                        created_by, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                 """,
                     receivable_id, customer_id, None,
                     f"Venda {sale_number}", sale_number, total_amount, 0.0,
                     now.date(), due_date, "PENDING", quotation["payment_method"],
-                    "VENDAS", 0, 1, now, now
+                    "VENDAS", 0, 1, current_user_id(user), now, now
                 )
             else:
                 parent_id = str(uuid.uuid4())
@@ -2663,13 +2755,13 @@ async def convert_quotation_to_sale(
                         description, document_number, amount, paid_amount,
                         issue_date, due_date, status, payment_method,
                         category, installment_number, total_installments,
-                        created_at, updated_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                        created_by, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                 """,
                     parent_id, customer_id, None,
                     f"Venda {sale_number}", sale_number, total_amount, 0.0,
                     now.date(), now.date(), "PENDING", quotation["payment_method"],
-                    "VENDAS", 0, num_installments, now, now
+                    "VENDAS", 0, num_installments, current_user_id(user), now, now
                 )
 
                 for i in range(1, num_installments + 1):
@@ -2682,14 +2774,14 @@ async def convert_quotation_to_sale(
                             description, document_number, amount, paid_amount,
                             issue_date, due_date, status, payment_method,
                             category, installment_number, total_installments,
-                            created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                            created_by, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                     """,
                         inst_id, customer_id, parent_id,
                         f"Venda {sale_number} - Parcela {i}/{num_installments}",
                         f"{sale_number}-{i}", amount, 0.0,
                         now.date(), due_date, "PENDING", quotation["payment_method"],
-                        "VENDAS", i, num_installments, now, now
+                        "VENDAS", i, num_installments, current_user_id(user), now, now
                     )
 
         return {
@@ -2723,15 +2815,16 @@ async def list_purchases(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Conta total para paginação
-        total = await conn.fetchval("SELECT COUNT(*) FROM purchases") or 0
+        # Conta total para paginação (respeita dono: superadmin ve tudo, demais so o proprio)
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM purchases WHERE TRUE {owner_filter(user)}") or 0
 
         # Schema legado: suppliers usa company_name/trade_name/name
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT p.*,
                 COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
             FROM purchases p
             LEFT JOIN suppliers s ON p.supplier_id = s.id
+            WHERE TRUE {owner_filter(user, "p")}
             ORDER BY p.purchase_date DESC
             LIMIT $1 OFFSET $2
         """, limit, skip)
@@ -2797,11 +2890,11 @@ async def create_purchase(
                 subtotal, discount_amount, freight_amount, insurance_amount, other_expenses,
                 tax_amount, total_amount, payment_method, payment_terms, installments,
                 status, notes, internal_notes, stock_updated, accounts_payable_created,
-                cfop, nature_operation, created_at, updated_at
+                cfop, nature_operation, created_by, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25, $26, $27, $28, $29
+                $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
             )
         """,
             purchase_id, purchase_number, to_str(data.get("supplier_id")),
@@ -2814,7 +2907,7 @@ async def create_purchase(
             to_str(data.get("status")) or "PENDING", to_str(data.get("notes")),
             to_str(data.get("internal_notes")), False, False,
             to_str(data.get("cfop")), to_str(data.get("nature_operation")),
-            now, now
+            current_user_id(user), now, now
         )
 
         # Insere itens da compra se houver
@@ -2872,10 +2965,10 @@ async def create_purchase(
                         description, document_number, amount, amount_paid, balance,
                         issue_date, due_date, payment_date, status, payment_method,
                         category, installment_number, total_installments, notes,
-                        created_at, updated_at
+                        created_by, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                     )
                 """,
                     payable_id, supplier_id, purchase_id, None, supplier_name,
@@ -2883,7 +2976,7 @@ async def create_purchase(
                     total_amount, 0.0, total_amount,
                     purchase_date, purchase_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "COMPRAS", 0, 1, to_str(data.get("notes")),
-                    now, now
+                    current_user_id(user), now, now
                 )
             else:
                 # Múltiplas parcelas
@@ -2898,10 +2991,10 @@ async def create_purchase(
                         description, document_number, amount, amount_paid, balance,
                         issue_date, due_date, payment_date, status, payment_method,
                         category, installment_number, total_installments, notes,
-                        created_at, updated_at
+                        created_by, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                     )
                 """,
                     parent_id, supplier_id, purchase_id, None, supplier_name,
@@ -2909,7 +3002,7 @@ async def create_purchase(
                     total_amount, 0.0, total_amount,
                     purchase_date, purchase_date, None, "PENDING", to_payment_method(data.get("payment_method")),
                     "COMPRAS", 0, num_installments, to_str(data.get("notes")),
-                    now, now
+                    current_user_id(user), now, now
                 )
 
                 # Cria parcelas filhas
@@ -2925,10 +3018,10 @@ async def create_purchase(
                             description, document_number, amount, amount_paid, balance,
                             issue_date, due_date, payment_date, status, payment_method,
                             category, installment_number, total_installments, notes,
-                            created_at, updated_at
+                            created_by, created_at, updated_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                         )
                     """,
                         child_id, supplier_id, purchase_id, parent_id, supplier_name,
@@ -2937,7 +3030,7 @@ async def create_purchase(
                         amount, 0.0, amount,
                         purchase_date, due, None, "PENDING", to_payment_method(data.get("payment_method")),
                         "COMPRAS", i, num_installments, to_str(data.get("notes")),
-                        now, now
+                        current_user_id(user), now, now
                     )
 
             # Marca que contas a pagar foram criadas
@@ -3025,20 +3118,22 @@ async def list_accounts_receivable(
     conn = await get_tenant_connection(tenant)
 
     try:
-        # Conta total para paginacao
-        total = await conn.fetchval("SELECT COUNT(*) FROM accounts_receivable") or 0
+        # Conta total para paginacao (respeita dono: superadmin ve tudo, demais so o proprio)
+        total = await conn.fetchval(
+            f"SELECT COUNT(*) FROM accounts_receivable ar WHERE TRUE {owner_filter(user, 'ar')}"
+        ) or 0
 
         # FILTRO POR CUSTOMER_ID - usado na tela de Vendas para mostrar contas do cliente selecionado
         if customer_id:
             print(f"[AR] Filtrando por customer_id: {customer_id}", flush=True)
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ar.*,
                     COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                     (SELECT MIN(child.due_date) FROM accounts_receivable child
                      WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
-                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL) {owner_filter(user, 'ar')}
                   AND ar.customer_id = $1
                 ORDER BY ar.due_date DESC
                 LIMIT $2 OFFSET $3
@@ -3051,14 +3146,14 @@ async def list_accounts_receivable(
         # IMPORTANTE: Retorna apenas contas PAI (installment_number = 0)
         # Inclui next_due_date = próxima parcela a vencer (não paga)
         if search:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ar.*,
                     COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                     (SELECT MIN(child.due_date) FROM accounts_receivable child
                      WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
-                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL) {owner_filter(user, 'ar')}
                   AND (c.first_name ILIKE $1 OR c.last_name ILIKE $1
                     OR c.company_name ILIKE $1 OR ar.description ILIKE $1)
                 ORDER BY ar.due_date
@@ -3071,14 +3166,14 @@ async def list_accounts_receivable(
 
             # OVERDUE: Contas PAI que têm PARCELAS FILHAS vencidas e não pagas
             if status_upper == 'OVERDUE':
-                rows = await conn.fetch("""
+                rows = await conn.fetch(f"""
                     SELECT ar.*,
                         COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                         (SELECT MIN(child.due_date) FROM accounts_receivable child
                          WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
-                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL) {owner_filter(user, 'ar')}
                       AND UPPER(ar.status::text) IN ('PENDING', 'PARTIAL')
                       AND (
                           -- Conta PAI com parcelas: tem parcela vencida não paga
@@ -3100,14 +3195,14 @@ async def list_accounts_receivable(
             # PAID: Contas PAI que têm PELO MENOS UMA parcela paga
             # (mostra contas que receberam pagamentos)
             elif status_upper == 'PAID':
-                rows = await conn.fetch("""
+                rows = await conn.fetch(f"""
                     SELECT ar.*,
                         COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                         (SELECT MIN(child.due_date) FROM accounts_receivable child
                          WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
-                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL) {owner_filter(user, 'ar')}
                       AND (
                           -- Conta PAI com parcelas: tem pelo menos uma parcela paga
                           EXISTS (
@@ -3126,14 +3221,14 @@ async def list_accounts_receivable(
 
             # PENDING/PARTIAL: Filtro normal
             else:
-                rows = await conn.fetch("""
+                rows = await conn.fetch(f"""
                     SELECT ar.*,
                         COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                         (SELECT MIN(child.due_date) FROM accounts_receivable child
                          WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                     FROM accounts_receivable ar
                     LEFT JOIN customers c ON ar.customer_id = c.id
-                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                    WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL) {owner_filter(user, 'ar')}
                       AND UPPER(ar.status::text) = $3
                     ORDER BY ar.due_date
                     LIMIT $1 OFFSET $2
@@ -3143,14 +3238,14 @@ async def list_accounts_receivable(
 
         # Listagem geral (sem filtro de status)
         else:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ar.*,
                     COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.company_name, c.trade_name) as customer_name,
                     (SELECT MIN(child.due_date) FROM accounts_receivable child
                      WHERE child.parent_id = ar.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_receivable ar
                 LEFT JOIN customers c ON ar.customer_id = c.id
-                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL)
+                WHERE (ar.installment_number = 0 OR ar.installment_number IS NULL) {owner_filter(user, 'ar')}
                 ORDER BY ar.due_date
                 LIMIT $1 OFFSET $2
             """, limit, skip)
@@ -3269,8 +3364,9 @@ async def create_account_receivable(
         row = await conn.fetchrow("""
             INSERT INTO accounts_receivable (
                 id, customer_id, description, amount, paid_amount, due_date, issue_date,
-                status, payment_method, installment_number, total_installments, parent_id, is_active
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                status, payment_method, installment_number, total_installments, parent_id, is_active,
+                created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
         """,
             account_id,
@@ -3285,7 +3381,8 @@ async def create_account_receivable(
             account.get("installment_number"),
             account.get("total_installments"),
             account.get("parent_id"),
-            True  # is_active sempre True ao criar
+            True,  # is_active sempre True ao criar
+            current_user_id(user)  # dono do lancamento (para filtro superadmin/admin)
         )
         return row_to_dict(row)
     finally:
@@ -3848,8 +3945,9 @@ async def create_bulk_accounts_receivable(
             parent_row = await conn.fetchrow("""
                 INSERT INTO accounts_receivable (
                     id, customer_id, description, amount, paid_amount, due_date, issue_date,
-                    status, payment_method, installment_number, total_installments, parent_id, is_active
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    status, payment_method, installment_number, total_installments, parent_id, is_active,
+                    created_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING *
             """,
                 parent_id,
@@ -3864,7 +3962,8 @@ async def create_bulk_accounts_receivable(
                 0,  # installment_number = 0 para PAI
                 num_installments,
                 None,  # parent_id = None (é a conta pai)
-                True
+                True,
+                current_user_id(user)
             )
             created.append(row_to_dict(parent_row))
 
@@ -3885,8 +3984,9 @@ async def create_bulk_accounts_receivable(
                 installment_row = await conn.fetchrow("""
                     INSERT INTO accounts_receivable (
                         id, customer_id, description, amount, paid_amount, due_date, issue_date,
-                        status, payment_method, installment_number, total_installments, parent_id, is_active
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        status, payment_method, installment_number, total_installments, parent_id, is_active,
+                        created_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     RETURNING *
                 """,
                     installment_id,
@@ -3901,7 +4001,8 @@ async def create_bulk_accounts_receivable(
                     i,  # installment_number
                     num_installments,
                     parent_id,  # referência à conta pai
-                    True
+                    True,
+                    current_user_id(user)
                 )
                 created.append(row_to_dict(installment_row))
         else:
@@ -3910,8 +4011,9 @@ async def create_bulk_accounts_receivable(
             row = await conn.fetchrow("""
                 INSERT INTO accounts_receivable (
                     id, customer_id, description, amount, paid_amount, due_date, issue_date,
-                    status, payment_method, installment_number, total_installments, parent_id, is_active
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    status, payment_method, installment_number, total_installments, parent_id, is_active,
+                    created_by
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING *
             """,
                 account_id,
@@ -3926,7 +4028,8 @@ async def create_bulk_accounts_receivable(
                 None,  # installment_number
                 None,  # total_installments
                 None,  # parent_id
-                True
+                True,
+                current_user_id(user)
             )
             created.append(row_to_dict(row))
 
@@ -3961,12 +4064,12 @@ async def list_accounts_payable(
         # Se purchase_id foi informado, retorna TODAS as parcelas vinculadas à compra
         # Isso é usado pelo modal de parcelas para baixa
         if purchase_id:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE ap.purchase_id = $1
+                WHERE ap.purchase_id = $1 {owner_filter(user, 'ap')}
                 ORDER BY ap.installment_number
             """, purchase_id)
 
@@ -3977,21 +4080,21 @@ async def list_accounts_payable(
         # Filtro inline para retornar apenas contas PAI (nao parcelas filhas)
 
         # Conta total para paginacao (apenas contas PAI)
-        total = await conn.fetchval("""
+        total = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable ap
-            WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
+            WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL) {owner_filter(user, 'ap')}
         """) or 0
 
         # Schema legado: suppliers usa company_name/trade_name/name
         if search:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
                     (SELECT MIN(child.due_date) FROM accounts_payable child
                      WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
+                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL) {owner_filter(user, 'ap')}
                   AND (s.company_name ILIKE $1 OR s.trade_name ILIKE $1
                     OR s.name ILIKE $1 OR ap.description ILIKE $1)
                 ORDER BY ap.due_date
@@ -4000,27 +4103,27 @@ async def list_accounts_payable(
         elif status:
             # Converte status para UPPERCASE para comparar com ENUM
             status_upper = status.upper()
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
                     (SELECT MIN(child.due_date) FROM accounts_payable child
                      WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
+                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL) {owner_filter(user, 'ap')}
                   AND UPPER(ap.status::text) = $3
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
             """, effective_limit, skip, status_upper)
         else:
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT ap.*,
                     COALESCE(s.company_name, s.trade_name, s.name) as supplier_name,
                     (SELECT MIN(child.due_date) FROM accounts_payable child
                      WHERE child.parent_id = ap.id AND UPPER(child.status::text) != 'PAID') as next_due_date
                 FROM accounts_payable ap
                 LEFT JOIN suppliers s ON ap.supplier_id = s.id
-                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL)
+                WHERE (ap.installment_number = 0 OR ap.installment_number IS NULL) {owner_filter(user, 'ap')}
                 ORDER BY ap.due_date
                 LIMIT $1 OFFSET $2
             """, effective_limit, skip)
@@ -4084,8 +4187,8 @@ async def create_account_payable(
         row = await conn.fetchrow("""
             INSERT INTO accounts_payable (
                 id, supplier_id, supplier, description, amount, amount_paid, balance,
-                due_date, category, payment_method, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                due_date, category, payment_method, status, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
         """,
             account_id,
@@ -4098,7 +4201,8 @@ async def create_account_payable(
             due_date,
             account.get("category", "suppliers"),
             account.get("payment_method", "bank_transfer"),
-            (account.get("status") or "PENDING").upper()  # ENUM requer MAIÚSCULO
+            (account.get("status") or "PENDING").upper(),  # ENUM requer MAIÚSCULO
+            current_user_id(user)  # dono do lancamento (para filtro superadmin/admin)
         )
         return row_to_dict(row)
     finally:
@@ -5240,8 +5344,9 @@ async def list_legal_calculations(
     conn = await get_tenant_connection(tenant)
 
     try:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(f"""
             SELECT * FROM legal_calculations
+            WHERE TRUE {owner_filter(user)}
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
         """, limit, skip)
@@ -5397,8 +5502,8 @@ async def create_legal_calculation(
              aplicar_multa_523,
              valor_total_geral, valor_principal, valor_juros_mora, valor_multa,
              valor_custas, valor_despesas, valor_honorarios_sucumbencia, subtotal,
-             metadata_calculo, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             metadata_calculo, created_by, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32::jsonb, $33, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """, calc_id, nome, descricao, numero_processo, customer_id, data_calculo, termo_final_dt, indice_correcao,
              aplicar_variacoes_positivas, usar_capitalizacao_simples, manter_valor_nominal_inflacao_negativa,
              tipo_juros_mora, percentual_juros_mora_val, juros_mora_a_partir_de, data_fixa_juros_mora,
@@ -5408,7 +5513,7 @@ async def create_legal_calculation(
              aplicar_multa_523,
              valor_total_geral, valor_principal_calc, valor_juros_mora_calc, valor_multa_calc,
              valor_custas, valor_despesas, valor_honorarios_sucumbencia, subtotal_val,
-             metadata_calculo)
+             metadata_calculo, current_user_id(user))
 
         return {"id": calc_id, "message": "Calculo criado com sucesso", "data": data_calculado}
     except Exception as e:
@@ -5999,9 +6104,10 @@ async def get_dashboard_overview(
             employees_count = await conn.fetchval("SELECT COUNT(*) FROM employees") or 0
 
         # Vendas do mes - schema legado usa total_amount em vez de total
-        sales_month = await conn.fetchval("""
+        sales_month = await conn.fetchval(f"""
             SELECT COALESCE(SUM(COALESCE(total_amount, 0)), 0) FROM sales
             WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
+            {owner_filter(user)}
         """) or 0
 
         # Verifica se coluna parent_id existe nas tabelas (compatibilidade multi-tenant)
@@ -6029,74 +6135,86 @@ async def get_dashboard_overview(
         # CONTAS A RECEBER - queries compatíveis com diferentes schemas
         if ar_has_parent and ar_has_is_active:
             # Schema novo com parent_id e is_active
-            receivables_pending = await conn.fetchval("""
+            receivables_pending = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
                 AND is_active = true
                 AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+                {owner_filter(user)}
             """) or 0
-            receivables_received = await conn.fetchval("""
+            receivables_received = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
                 AND is_active = true
                 AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+                {owner_filter(user)}
             """) or 0
-            receivables_overdue = await conn.fetchval("""
+            receivables_overdue = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
                 AND due_date < CURRENT_DATE
                 AND is_active = true
                 AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+                {owner_filter(user)}
             """) or 0
         else:
             # Schema legado sem parent_id - soma tudo
-            receivables_pending = await conn.fetchval("""
+            receivables_pending = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
-            receivables_received = await conn.fetchval("""
+            receivables_received = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
-            receivables_overdue = await conn.fetchval("""
+            receivables_overdue = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
                 AND due_date < CURRENT_DATE
+                {owner_filter(user)}
             """) or 0
 
         # CONTAS A PAGAR - queries compatíveis com diferentes schemas
         if ap_has_parent:
             # Schema novo com parent_id
-            payables_pending = await conn.fetchval("""
+            payables_pending = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
                 AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+                {owner_filter(user)}
             """) or 0
-            payables_paid = await conn.fetchval("""
+            payables_paid = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
                 AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+                {owner_filter(user)}
             """) or 0
-            payables_overdue = await conn.fetchval("""
+            payables_overdue = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
                 AND due_date < CURRENT_DATE
                 AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+                {owner_filter(user)}
             """) or 0
         else:
             # Schema legado sem parent_id - soma tudo
-            payables_pending = await conn.fetchval("""
+            payables_pending = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
-            payables_paid = await conn.fetchval("""
+            payables_paid = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE UPPER(status::text) IN ('PAID', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
-            payables_overdue = await conn.fetchval("""
+            payables_overdue = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
                 WHERE UPPER(status::text) IN ('PENDING', 'PARTIAL')
                 AND due_date < CURRENT_DATE
+                {owner_filter(user)}
             """) or 0
 
         return {
@@ -6213,12 +6331,14 @@ async def get_accounts_receivable_summary(
     try:
         # Filtro para excluir contas PAI de parcelamentos (evita duplicacao)
         # Inclui: parcelas filhas (parent_id IS NOT NULL) + contas simples (sem parcelas)
-        filter_clause = """
+        # + filtro de dono (superadmin ve tudo, demais so o proprio)
+        filter_clause = f"""
             AND is_active = true
             AND (
                 parent_id IS NOT NULL
                 OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1))
             )
+            {owner_filter(user)}
         """
 
         # Valor total pendente (a receber)
@@ -6262,115 +6382,131 @@ async def get_accounts_receivable_detailed(
     try:
         # Filtro SQL inline para excluir contas PAI de parcelamentos (evita duplicacao)
         # SEGURANCA: Queries sem concatenacao de strings - SQL puro parametrizado
+        # oc = filtro de dono (superadmin ve tudo, demais so o proprio)
+        oc = owner_filter(user)
 
         # Contagens (excluindo contas PAI de parcelamentos)
-        count_total = await conn.fetchval("""
+        count_total = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        count_pending = await conn.fetchval("""
+        count_pending = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        count_paid = await conn.fetchval("""
+        count_paid = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE status::text IN ('paid', 'PAID')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        count_overdue = await conn.fetchval("""
+        count_overdue = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND due_date < CURRENT_DATE
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
         # Valores (excluindo contas PAI de parcelamentos)
-        amount_total = await conn.fetchval("""
+        amount_total = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount), 0) FROM accounts_receivable
             WHERE is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        amount_paid = await conn.fetchval("""
+        amount_paid = await conn.fetchval(f"""
             SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
             WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        amount_balance = await conn.fetchval("""
+        amount_balance = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        amount_overdue = await conn.fetchval("""
+        amount_overdue = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND due_date < CURRENT_DATE
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
         # Ticket medio
         avg_ticket = float(amount_total) / float(count_total) if count_total > 0 else 0
 
         # Vencimentos (excluindo contas PAI de parcelamentos)
-        due_today_count = await conn.fetchval("""
+        due_today_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE due_date = CURRENT_DATE
             AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        due_today_amount = await conn.fetchval("""
+        due_today_amount = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
             WHERE due_date = CURRENT_DATE
             AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        due_week_count = await conn.fetchval("""
+        due_week_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7
             AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        due_week_amount = await conn.fetchval("""
+        due_week_amount = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
             WHERE due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7
             AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        due_month_count = await conn.fetchval("""
+        due_month_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_receivable
             WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
             AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
-        due_month_amount = await conn.fetchval("""
+        due_month_amount = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
             WHERE DATE_TRUNC('month', due_date) = DATE_TRUNC('month', CURRENT_DATE)
             AND status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
             AND is_active = true
             AND (parent_id IS NOT NULL OR (parent_id IS NULL AND (total_installments IS NULL OR total_installments <= 1)))
+            {oc}
         """) or 0
 
         # Percentuais
@@ -6428,15 +6564,17 @@ async def get_accounts_payable_summary(
 
     try:
         # Schema legado usa amount_paid em vez de paid_amount
-        total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable") or 0
-        paid = await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable") or 0
-        pending = await conn.fetchval("""
+        total = await conn.fetchval(f"SELECT COALESCE(SUM(amount), 0) FROM accounts_payable {owner_where(user)}") or 0
+        paid = await conn.fetchval(f"SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable {owner_where(user)}") or 0
+        pending = await conn.fetchval(f"""
             SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING')
+            {owner_filter(user)}
         """) or 0
-        overdue = await conn.fetchval("""
+        overdue = await conn.fetchval(f"""
             SELECT COALESCE(SUM(COALESCE(balance, amount - COALESCE(amount_paid, 0))), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING') AND due_date < CURRENT_DATE
+            {owner_filter(user)}
         """) or 0
 
         return {
@@ -6444,9 +6582,9 @@ async def get_accounts_payable_summary(
             "paid": float(paid),
             "pending": float(pending),
             "overdue": float(overdue),
-            "count_total": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable") or 0,
-            "count_pending": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status::text IN ('pending', 'PENDING')") or 0,
-            "count_paid": await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE status::text IN ('paid', 'PAID')") or 0
+            "count_total": await conn.fetchval(f"SELECT COUNT(*) FROM accounts_payable {owner_where(user)}") or 0,
+            "count_pending": await conn.fetchval(f"SELECT COUNT(*) FROM accounts_payable WHERE status::text IN ('pending', 'PENDING') {owner_filter(user)}") or 0,
+            "count_paid": await conn.fetchval(f"SELECT COUNT(*) FROM accounts_payable WHERE status::text IN ('paid', 'PAID') {owner_filter(user)}") or 0
         }
     finally:
         await conn.close()
@@ -6467,70 +6605,84 @@ async def get_accounts_payable_detailed(
         month_start = today.replace(day=1)
         month_end = (month_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
 
+        # oc = filtro de dono (superadmin ve tudo, demais so o proprio)
+        oc = owner_filter(user)
+
         # Contagens
-        total_count = await conn.fetchval("SELECT COUNT(*) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0
-        pending_count = await conn.fetchval("""
+        total_count = await conn.fetchval(f"SELECT COUNT(*) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL) {oc}") or 0
+        pending_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """) or 0
-        paid_count = await conn.fetchval("""
+        paid_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND UPPER(status::text) = 'PAID'
+            {oc}
         """) or 0
-        overdue_count = await conn.fetchval("""
+        overdue_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date < $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, today) or 0
 
         # Valores
-        total_amount = float(await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
-        paid_amount = float(await conn.fetchval("SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL)") or 0)
-        balance = float(await conn.fetchval("""
+        total_amount = float(await conn.fetchval(f"SELECT COALESCE(SUM(amount), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL) {oc}") or 0)
+        paid_amount = float(await conn.fetchval(f"SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable WHERE (installment_number = 0 OR installment_number IS NULL) {oc}") or 0)
+        balance = float(await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """) or 0)
-        overdue_amount = float(await conn.fetchval("""
+        overdue_amount = float(await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date < $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, today) or 0)
 
         # Vencimentos
-        due_today_count = await conn.fetchval("""
+        due_today_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date = $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, today) or 0
-        due_today_amount = float(await conn.fetchval("""
+        due_today_amount = float(await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date = $1 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, today) or 0)
 
-        due_week_count = await conn.fetchval("""
+        due_week_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, today, week_later) or 0
-        due_week_amount = float(await conn.fetchval("""
+        due_week_amount = float(await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, today, week_later) or 0)
 
-        due_month_count = await conn.fetchval("""
+        due_month_count = await conn.fetchval(f"""
             SELECT COUNT(*) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, month_start, month_end) or 0
-        due_month_amount = float(await conn.fetchval("""
+        due_month_amount = float(await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE (installment_number = 0 OR installment_number IS NULL)
             AND due_date >= $1 AND due_date <= $2 AND UPPER(status::text) IN ('PENDING', 'PARTIAL')
+            {oc}
         """, month_start, month_end) or 0)
 
         # Percentuais
@@ -6741,7 +6893,7 @@ async def get_reports_accounts_receivable_summary(
                 params.append(status_upper)
                 param_idx += 1
 
-        where_clause = " AND ".join(where_parts) + filter_clause
+        where_clause = " AND ".join(where_parts) + filter_clause + owner_filter(user, "ar")
 
         # Lista de contas
         # Inclui campo 'balance' calculado e status ajustado para 'overdue' quando vencido
@@ -6857,7 +7009,7 @@ async def get_reports_accounts_payable_summary(
                 params.append(status_upper)
                 param_idx += 1
 
-        where_clause = " AND ".join(where_parts)
+        where_clause = " AND ".join(where_parts) + owner_filter(user, "ap")
 
         # Lista de contas - usa apenas amount_paid (schema padrão)
         # Inclui campo 'balance' calculado e status ajustado para 'overdue' quando vencido
@@ -6977,7 +7129,7 @@ async def get_reports_sales(
             params.append(seller_id)
             param_idx += 1
 
-        where_clause = " AND ".join(where_parts)
+        where_clause = " AND ".join(where_parts) + owner_filter(user, "s")
 
         rows = await conn.fetch(f"""
             SELECT s.*,
@@ -7036,7 +7188,7 @@ async def get_reports_purchases(
             params.append(supplier_id)
             param_idx += 1
 
-        where_clause = " AND ".join(where_parts)
+        where_clause = " AND ".join(where_parts) + owner_filter(user, "p")
 
         rows = await conn.fetch(f"""
             SELECT p.*,
@@ -7077,55 +7229,63 @@ async def get_reports_cash_flow(
 
         if start_date and end_date:
             # Entradas (recebimentos) com filtro de data
-            entradas = await conn.fetchval("""
+            entradas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
                 WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
                 AND due_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
 
             # Saidas (pagamentos) com filtro de data
-            saidas = await conn.fetchval("""
+            saidas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
                 AND due_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
 
             # Previsao de entradas com filtro de data
-            previsao_entradas = await conn.fetchval("""
+            previsao_entradas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
                 AND due_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
 
             # Previsao de saidas com filtro de data
-            previsao_saidas = await conn.fetchval("""
+            previsao_saidas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
                 AND due_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
         else:
             # Entradas (recebimentos) sem filtro de data
-            entradas = await conn.fetchval("""
+            entradas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(paid_amount), 0) FROM accounts_receivable
                 WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
 
             # Saidas (pagamentos) sem filtro de data
-            saidas = await conn.fetchval("""
+            saidas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE status::text IN ('paid', 'PAID', 'partial', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
 
             # Previsao de entradas sem filtro de data
-            previsao_entradas = await conn.fetchval("""
+            previsao_entradas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
 
             # Previsao de saidas sem filtro de data
-            previsao_saidas = await conn.fetchval("""
+            previsao_saidas = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
+                {owner_filter(user)}
             """) or 0
 
         return {
@@ -7157,25 +7317,29 @@ async def get_reports_dre(
 
         if start_date and end_date:
             # Receitas (vendas) com filtro de data
-            receita_bruta = await conn.fetchval("""
+            receita_bruta = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(total_amount), 0) FROM sales
                 WHERE sale_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
 
             # Custos (compras) com filtro de data
-            custos = await conn.fetchval("""
+            custos = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(total_amount), 0) FROM purchases
                 WHERE purchase_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
         else:
             # Receitas (vendas) sem filtro de data
-            receita_bruta = await conn.fetchval("""
+            receita_bruta = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(total_amount), 0) FROM sales
+                {owner_where(user)}
             """) or 0
 
             # Custos (compras) sem filtro de data
-            custos = await conn.fetchval("""
+            custos = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(total_amount), 0) FROM purchases
+                {owner_where(user)}
             """) or 0
 
         lucro_bruto = float(receita_bruta) - float(custos)
@@ -7251,7 +7415,7 @@ async def get_reports_default_analysis(
             params.append(customer_id)
             param_idx += 1
 
-        where_clause = " AND ".join(where_parts)
+        where_clause = " AND ".join(where_parts) + owner_filter(user, "ar")
 
         rows = await conn.fetch(f"""
             SELECT ar.id, ar.customer_id, ar.description, ar.document_number, ar.amount,
@@ -7292,33 +7456,37 @@ async def get_reports_forecast(
 
         if start_date and end_date:
             # A receber previsto com filtro de data
-            a_receber = await conn.fetchval("""
+            a_receber = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
                 AND is_active = true
                 AND due_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
 
             # A pagar previsto com filtro de data
-            a_pagar = await conn.fetchval("""
+            a_pagar = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
                 AND is_active = true
                 AND due_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
         else:
             # A receber previsto sem filtro de data
-            a_receber = await conn.fetchval("""
+            a_receber = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
                 AND is_active = true
+                {owner_filter(user)}
             """) or 0
 
             # A pagar previsto sem filtro de data
-            a_pagar = await conn.fetchval("""
+            a_pagar = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
                 WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL')
                 AND is_active = true
+                {owner_filter(user)}
             """) or 0
 
         return {
@@ -7348,28 +7516,32 @@ async def get_reports_management(
 
         # Vendas do periodo - SEGURANCA: Queries condicionais sem concatenacao
         if start_date and end_date:
-            total_sales = await conn.fetchval("""
+            total_sales = await conn.fetchval(f"""
                 SELECT COALESCE(SUM(total_amount), 0) FROM sales
                 WHERE sale_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
-            count_sales = await conn.fetchval("""
+            count_sales = await conn.fetchval(f"""
                 SELECT COUNT(*) FROM sales
                 WHERE sale_date BETWEEN $1 AND $2
+                {owner_filter(user)}
             """, start_date, end_date) or 0
         else:
-            total_sales = await conn.fetchval("SELECT COALESCE(SUM(total_amount), 0) FROM sales") or 0
-            count_sales = await conn.fetchval("SELECT COUNT(*) FROM sales") or 0
+            total_sales = await conn.fetchval(f"SELECT COALESCE(SUM(total_amount), 0) FROM sales {owner_where(user)}") or 0
+            count_sales = await conn.fetchval(f"SELECT COUNT(*) FROM sales {owner_where(user)}") or 0
 
         # A receber
-        total_receivable = await conn.fetchval("""
+        total_receivable = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(paid_amount, 0)), 0) FROM accounts_receivable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true
+            {owner_filter(user)}
         """) or 0
 
         # A pagar
-        total_payable = await conn.fetchval("""
+        total_payable = await conn.fetchval(f"""
             SELECT COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) FROM accounts_payable
             WHERE status::text IN ('pending', 'PENDING', 'partial', 'PARTIAL') AND is_active = true
+            {owner_filter(user)}
         """) or 0
 
         return {
