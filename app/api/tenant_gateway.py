@@ -406,10 +406,10 @@ async def get_tenant_from_token(
         "user_id": payload.get("user_id"),
         "is_admin": payload.get("is_admin", False),
         "role": (payload.get("role") or "user"),
-        # is_superadmin: dono da conta (ou role superadmin) ve TODOS os lancamentos.
-        # Tokens antigos (emitidos antes desta versao) nao tem o campo: nesse caso,
-        # cai no fallback is_admin para nao esconder dados de quem ja esta logado.
-        "is_superadmin": payload.get("is_superadmin", payload.get("is_admin", False)),
+        # is_superadmin: SOMENTE quem tem role='superadmin' ve todos os lancamentos.
+        # Fail-closed: tokens antigos sem o campo assumem False (mostram de menos,
+        # nunca de mais). O usuario passa a ver tudo apenas apos relogar com role superadmin.
+        "is_superadmin": payload.get("is_superadmin", False),
     }
 
     return tenant, user_data

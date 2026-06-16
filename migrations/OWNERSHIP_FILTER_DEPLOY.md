@@ -6,9 +6,11 @@ Data: 2026-06-16
 1. **Troca de senha**: qualquer usuario logado pode alterar a propria senha pelo sistema
    (antes so existia o fluxo forcado no 1o login).
 2. **Filtro por dono**:
-   - **superadmin** (dono da conta = usuario cujo email == email de cadastro do tenant)
-     enxerga **TODOS** os lancamentos financeiros e calculos juridicos.
-   - **demais usuarios** (admin/user) enxergam **APENAS** o que eles proprios criaram.
+   - **superadmin** = usuario com `role='superadmin'` (EXPLICITO; marcado na tela Usuarios)
+     enxerga **TODOS** os lancamentos financeiros e calculos juridicos (incl. antigos).
+   - **demais usuarios** (admin/user/etc) enxergam **APENAS** o que eles proprios criaram.
+   - NOTA: a regra "dono = email de cadastro" foi REMOVIDA (2026-06-16) por gerar
+     superadmin inesperado; agora vale somente o role explicito.
    - Registros **antigos** (sem `created_by`) ficam visiveis **somente ao superadmin**
      (decisao do cliente).
 
