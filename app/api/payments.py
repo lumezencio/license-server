@@ -44,6 +44,7 @@ class CreatePreferenceRequest(BaseModel):
     tenant_code: str
     plan_code: str
     return_url: Optional[str] = None  # URL base para retorno (se não informado, usa APP_URL)
+    product_code: Optional[str] = None  # Para lookup composto com tenant_code/email
 
 
 class CreatePreferenceResponse(BaseModel):
@@ -200,11 +201,21 @@ async def create_preference(
             detail="Configuração de pagamento incompleta. Contate o suporte."
         )
 
-    # Busca o tenant
+    # Busca o tenant (por tenant_code, ou por email + product_code como fallback)
     result = await db.execute(
         select(Tenant).where(Tenant.tenant_code == request.tenant_code)
     )
     tenant = result.scalar_one_or_none()
+
+    if not tenant and request.product_code:
+        # Fallback: buscar por email (tenant_code pode ser slug de outro sistema)
+        result = await db.execute(
+            select(Tenant).where(
+                Tenant.email == request.tenant_code,
+                Tenant.product_code == request.product_code,
+            )
+        )
+        tenant = result.scalar_one_or_none()
 
     if not tenant:
         raise HTTPException(
@@ -457,8 +468,9 @@ async def payment_webhook(
                         if license:
                             license.expires_at = new_expires
                             license.is_trial = False
-                            license.plan = "premium"  # Atualiza plano para premium após pagamento
-                            logger.info(f"License {license.license_key} sincronizada até {new_expires}, plan=premium")
+                            license.plan = "premium"
+                            license.status = "active"  # Reativa licença após pagamento
+                            logger.info(f"License {license.license_key} reativada até {new_expires}, plan=premium, status=active")
 
                     logger.info(f"Tenant {tenant.tenant_code} - Período estendido até {new_expires}")
 
@@ -627,8 +639,9 @@ async def simulate_payment_approval(
             if license:
                 license.expires_at = new_expires
                 license.is_trial = False
-                license.plan = "premium"  # Atualiza plano para premium após pagamento
-                logger.info(f"[SIMULADO] License {license.license_key} sincronizada até {new_expires}, plan=premium")
+                license.plan = "premium"
+                license.status = "active"  # Reativa licença após pagamento
+                logger.info(f"[SIMULADO] License {license.license_key} reativada até {new_expires}, plan=premium, status=active")
 
         await db.commit()
 

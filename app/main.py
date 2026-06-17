@@ -55,10 +55,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[BACKUP-SCHEDULER] Aviso: Nao foi possivel iniciar o scheduler: {e}")
 
+    # Inicia o task de expiracao automatica de licencas
+    expiration_task = None
+    try:
+        from app.core.license_expiration_task import run_expiration_task
+        expiration_task = asyncio.create_task(run_expiration_task())
+        print("[LICENSE-EXPIRATION] Task de expiracao automatica iniciado")
+    except Exception as e:
+        print(f"[LICENSE-EXPIRATION] Aviso: Nao foi possivel iniciar: {e}")
+
     yield
 
     # Shutdown
     print("Shutting down...")
+    if expiration_task:
+        expiration_task.cancel()
+        try:
+            await expiration_task
+        except asyncio.CancelledError:
+            print("[LICENSE-EXPIRATION] Task encerrado")
     if backup_scheduler_task:
         backup_scheduler_task.cancel()
         try:
