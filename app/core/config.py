@@ -8,11 +8,19 @@ import secrets
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Carrega .env com override para sobrescrever variáveis do sistema
-# Isso é necessário porque pode haver DATABASE_URL global no sistema
+# Carrega o .env local SEM sobrescrever o que já vier do ambiente.
+#
+# Era `override=True`, e isso custou caro: o .env de desenvolvimento acabou
+# dentro da imagem e passou a vencer a variável do container. A aplicação rodou
+# semanas em SQLite enquanto o DATABASE_URL do compose apontava, corretamente,
+# para o PostgreSQL — e o painel aparecia vazio porque lia o banco errado.
+#
+# A precedência correta é a do 12-factor: ambiente > arquivo. Em produção só
+# existe a variável do container; em desenvolvimento, onde ela não existe, o
+# .env continua valendo.
 env_file = Path(__file__).parent.parent.parent / ".env"
 if env_file.exists():
-    load_dotenv(env_file, override=True)
+    load_dotenv(env_file, override=False)
 
 
 class Settings(BaseSettings):

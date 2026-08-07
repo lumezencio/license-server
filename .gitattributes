@@ -1,0 +1,5 @@
+# Fim de linha LF obrigatorio: com CRLF o Docker le o padrao como ".env"
+# e nao ignora arquivo nenhum. Foi assim que um .env de desenvolvimento
+# entrou na imagem de producao.
+.dockerignore text eol=lf
+.env* text eol=lf
