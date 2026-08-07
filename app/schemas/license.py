@@ -54,9 +54,15 @@ class LicenseResponse(BaseModel):
     is_valid: Optional[bool] = True
     days_until_expiry: Optional[int] = 0
     created_at: Optional[datetime] = None
+    # Campo livre gravado na emissão. É por ele que o painel sabe de qual
+    # produto é a licença — o Radar grava {"produto": "radar", "oab": ...}.
+    # O alias existe porque no modelo o atributo é `metadata_`, para não
+    # colidir com o `metadata` reservado do SQLAlchemy.
+    metadata: Optional[dict] = Field(default=None, alias="metadata_")
 
     class Config:
         from_attributes = True
+        populate_by_name = True
 
 
 class LicenseActivateRequest(BaseModel):
