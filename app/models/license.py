@@ -121,6 +121,10 @@ class License(Base):
         }
         if include_signature:
             data["signature"] = self.signature
+        # Campo livre gravado na emissão. É por ele que o painel distingue de
+        # qual produto é a licença — o Radar grava {"produto": "radar", ...}.
+        # O endpoint serializa por to_dict(), então não bastava expor no schema.
+        data["metadata"] = self.metadata_ or {}
         return data
 
     def to_license_file(self) -> dict:
