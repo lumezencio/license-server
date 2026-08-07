@@ -112,6 +112,17 @@ export default function Licenses() {
     return labels[status] || status;
   };
 
+  // De qual produto é a licença. Só o Radar se identifica hoje, pela metadata
+  // gravada na emissão — as demais são do enterprise_system e ficam como
+  // "Enterprise". Sem isso a tela mistura tudo numa lista só.
+  const getProduto = (license) => {
+    const meta = license.metadata || license.metadata_ || {};
+    if (meta.produto === 'radar') {
+      return { nome: 'Radar', detalhe: meta.oab || '', cor: 'text-cyan-400', badge: 'info' };
+    }
+    return { nome: 'Enterprise', detalhe: '', cor: 'text-blue-400', badge: 'default' };
+  };
+
   const getPlanInfo = (plan) => {
     const plans = {
       starter: { label: 'Starter', users: 3, color: 'info' },
@@ -307,6 +318,7 @@ export default function Licenses() {
               <TableRow>
                 <TableHead>Chave da Licença</TableHead>
                 <TableHead>Cliente</TableHead>
+                <TableHead>Produto</TableHead>
                 <TableHead>Plano</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Expiração</TableHead>
@@ -333,6 +345,18 @@ export default function Licenses() {
                         >
                           <Copy className="w-4 h-4 text-white/50" />
                         </button>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <span className={`text-sm font-semibold ${getProduto(license).cor}`}>
+                          {getProduto(license).nome}
+                        </span>
+                        {getProduto(license).detalhe && (
+                          <span className="text-xs text-white/40 font-mono">
+                            OAB {getProduto(license).detalhe}
+                          </span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>

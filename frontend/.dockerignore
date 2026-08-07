@@ -1,0 +1,21 @@
+# O contexto de build deste serviço é ./frontend, então o .dockerignore da raiz
+# NÃO se aplica aqui. Sem este arquivo, o `COPY . .` do Dockerfile sobrescreve o
+# node_modules recém-instalado pelo `npm ci` com o do servidor — o vite some e o
+# `npm run build` termina em 127 (comando não encontrado).
+node_modules
+dist
+build
+
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+coverage
