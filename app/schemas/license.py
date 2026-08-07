@@ -56,13 +56,16 @@ class LicenseResponse(BaseModel):
     created_at: Optional[datetime] = None
     # Campo livre gravado na emissão. É por ele que o painel sabe de qual
     # produto é a licença — o Radar grava {"produto": "radar", "oab": ...}.
-    # O alias existe porque no modelo o atributo é `metadata_`, para não
-    # colidir com o `metadata` reservado do SQLAlchemy.
-    metadata: Optional[dict] = Field(default=None, alias="metadata_")
+    #
+    # SEM ALIAS de propósito. O endpoint monta a resposta a partir de
+    # `License.to_dict()`, que já entrega a chave como "metadata". Um
+    # `alias="metadata_"` aqui faria o FastAPI SERIALIZAR com o nome do alias
+    # (response_model_by_alias vem True por padrão), e a API devolveria
+    # "metadata_" — que é justamente o nome que o painel não procura.
+    metadata: Optional[dict] = None
 
     class Config:
         from_attributes = True
-        populate_by_name = True
 
 
 class LicenseActivateRequest(BaseModel):
