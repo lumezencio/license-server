@@ -9,6 +9,7 @@ from .tenant_auth import router as tenant_auth_router
 from .tenant_gateway import router as tenant_gateway_router
 from .payments import router as payments_router
 from .diario_gateway import router as diario_gateway_router
+from .radar import router as radar_router
 
 __all__ = [
     "auth_router",
@@ -21,5 +22,6 @@ __all__ = [
     "tenant_auth_router",
     "tenant_gateway_router",
     "payments_router",
-    "diario_gateway_router"
+    "diario_gateway_router",
+    "radar_router"
 ]

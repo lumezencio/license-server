@@ -25,7 +25,8 @@ from app.api import (
     tenant_auth_router,
     tenant_gateway_router,
     payments_router,
-    diario_gateway_router
+    diario_gateway_router,
+    radar_router
 )
 
 # Rate limiting
@@ -136,6 +137,8 @@ app.include_router(provisioning_router, prefix="/api")
 app.include_router(tenant_auth_router, prefix="/api")
 app.include_router(tenant_gateway_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
+# Radar de Publicações — aditivo e isolado por metadata.produto (ver app/api/radar.py)
+app.include_router(radar_router, prefix="/api")
 app.include_router(diario_gateway_router, prefix="/api")
 
 # Static files para uploads
