@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import {
   Building2, Search, Eye, RefreshCw, CheckCircle, XCircle,
   Clock, Database, Package, BookOpen, Briefcase, Filter,
-  MessageCircle, Home
+  MessageCircle, Home, Radar
 } from 'lucide-react';
 import {
   Card, CardContent, Badge, LoadingSpinner, Button, Input
@@ -23,6 +23,7 @@ export default function Tenants() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [viewingTenant, setViewingTenant] = useState(null);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
+  const [radar, setRadar] = useState(null);
 
   useEffect(() => {
     loadTenants();
@@ -39,6 +40,15 @@ export default function Tenants() {
       setLoading(false);
     }
   };
+
+  // O Radar de Publicações não tem tenants: é um aplicativo de desktop, e cada
+  // inscrição da OAB cadastrada gera uma licença. A contagem vem de um endpoint
+  // próprio, que só enxerga licenças deste produto.
+  useEffect(() => {
+    api.get('/radar/v1/stats')
+      .then(({ data }) => setRadar(data))
+      .catch(() => {});
+  }, []);
 
   // Estatisticas por produto
   const stats = {
@@ -150,7 +160,7 @@ export default function Tenants() {
       </div>
 
       {/* Stats por Produto */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
         <Card hover={false} className="cursor-pointer" onClick={() => { setProductFilter('all'); setStatusFilter('all'); }}>
           <CardContent className="py-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-2">
@@ -208,6 +218,20 @@ export default function Tenants() {
             </div>
             <p className="text-2xl sm:text-3xl font-bold text-amber-400">{stats.trial}</p>
             <p className="text-white/50 text-xs sm:text-sm">Em Trial</p>
+          </CardContent>
+        </Card>
+
+        {/* Radar de Publicações: aplicativo de desktop, sem tenant. Conta
+            licenças — uma por inscrição da OAB cadastrada. */}
+        <Card hover={false} title="Licenças do Radar de Publicações — uma por inscrição da OAB">
+          <CardContent className="py-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <Radar className="w-5 h-5 text-cyan-400" />
+            </div>
+            <p className="text-2xl sm:text-3xl font-bold text-cyan-400">
+              {radar ? radar.total : '—'}
+            </p>
+            <p className="text-white/50 text-xs sm:text-sm">Radar (licenças)</p>
           </CardContent>
         </Card>
       </div>

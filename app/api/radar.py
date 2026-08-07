@@ -188,6 +188,34 @@ async def emitir_licenca(
     )
 
 
+@router.get("/stats")
+async def estatisticas(db: AsyncSession = Depends(get_db)):
+    """Contagem das licenças do Radar, para o painel.
+
+    Público e somente-leitura: devolve apenas números agregados deste produto,
+    nada de chaves nem de dados de outros sistemas.
+    """
+    linhas = await db.execute(select(License).join(Client).where(
+        Client.email == CLIENT_EMAIL
+    ))
+    licencas = [
+        lic for lic in linhas.scalars().all()
+        if (lic.metadata_ or {}).get("produto") == PRODUTO
+    ]
+    ufs = {
+        (lic.metadata_ or {}).get("uf_oab")
+        for lic in licencas
+        if (lic.metadata_ or {}).get("uf_oab")
+    }
+    return {
+        "produto": PRODUTO,
+        "total": len(licencas),
+        "ativas": sum(1 for lic in licencas if lic.status == LicenseStatus.ACTIVE.value),
+        "estados": len(ufs),
+        "maquinas": len({lic.hardware_id for lic in licencas if lic.hardware_id}),
+    }
+
+
 @router.get("/licenca/{license_key}", response_model=LicencaRadarResponse)
 async def consultar_licenca(license_key: str, db: AsyncSession = Depends(get_db)):
     """Confere uma licença do Radar. Só enxerga licenças deste produto."""
