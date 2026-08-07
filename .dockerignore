@@ -1,41 +1,39 @@
-# Git
-.git
-.gitignore
-
-# Python
-__pycache__
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-.venv/
-ENV/
-env/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
 
 # Build
-dist/
-build/
-*.egg-info/
-
+# Git
+# IDE
 # Local
-.env.local
-*.db
-*.sqlite3
-keys/
-
 # Misc
+# Python
+# Testing
+*$py.class
+*.db
+*.egg-info/
 *.log
+*.py[cod]
+*.so
+*.sqlite3
+*.swo
+*.swp
 .DS_Store
+.Python
+.coverage
+.env
+.env.dev
+.env.local
+.env.local
+.git
+.gitignore
+.idea/
+.pytest_cache/
+.venv/
+.vscode/
+ENV/
 Thumbs.db
+__pycache__
+build/
+dist/
+env/
+htmlcov/
+keys/
+venv/

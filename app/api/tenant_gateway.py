@@ -93,6 +93,16 @@ class CustomerModel(BaseModel):
     country: Optional[str] = "BR"
     # Dados adicionais
     birth_date: Optional[str] = None
+    # Dados pessoais / para documentos juridicos
+    nationality: Optional[str] = None
+    marital_status: Optional[str] = None
+    profession: Optional[str] = None
+    birth_city: Optional[str] = None      # naturalidade
+    birth_state: Optional[str] = None
+    mother_name: Optional[str] = None
+    father_name: Optional[str] = None
+    rg_issuer: Optional[str] = None       # orgao expedidor do RG
+    rg_issue_date: Optional[str] = None   # data de expedicao do RG
     customer_type: Optional[str] = "individual"
     customer_status: Optional[str] = "active"
     notes: Optional[str] = None
@@ -499,6 +509,40 @@ async def ensure_ownership_columns(conn: asyncpg.Connection, tenant_code: str = 
         _ownership_ensured.add(tenant_code)
 
 
+# Cache de tenants cujas colunas juridicas de 'customers' ja foram garantidas.
+_customer_cols_ensured: set = set()
+
+# Colunas juridicas/pessoais adicionadas a 'customers' (nome -> tipo SQL)
+_CUSTOMER_LEGAL_COLUMNS = {
+    "nationality": "VARCHAR(100)",
+    "marital_status": "VARCHAR(50)",
+    "profession": "VARCHAR(150)",
+    "birth_city": "VARCHAR(150)",
+    "birth_state": "VARCHAR(2)",
+    "mother_name": "VARCHAR(255)",
+    "father_name": "VARCHAR(255)",
+    "rg_issuer": "VARCHAR(100)",
+    "rg_issue_date": "DATE",
+}
+
+
+async def ensure_customer_columns(conn: asyncpg.Connection, tenant_code: str = "") -> None:
+    """
+    Garante (idempotente) as colunas juridicas/pessoais em 'customers' para
+    geracao de documentos (procuracao, declaracoes). Necessario para tenants
+    criados antes desta versao.
+    """
+    if tenant_code and tenant_code in _customer_cols_ensured:
+        return
+    for col, tipo in _CUSTOMER_LEGAL_COLUMNS.items():
+        try:
+            await conn.execute(f"ALTER TABLE customers ADD COLUMN IF NOT EXISTS {col} {tipo}")
+        except Exception as e:
+            logger.warning(f"ensure_customer_columns ({tenant_code}/{col}): {e}")
+    if tenant_code:
+        _customer_cols_ensured.add(tenant_code)
+
+
 async def get_tenant_connection(tenant: Tenant) -> asyncpg.Connection:
     """Cria conexao com banco do tenant"""
     try:
@@ -509,8 +553,10 @@ async def get_tenant_connection(tenant: Tenant) -> asyncpg.Connection:
             password=tenant.database_password,
             database=tenant.database_name
         )
-        # Garante colunas de ownership (uma vez por tenant apos restart)
-        await ensure_ownership_columns(conn, getattr(tenant, "tenant_code", ""))
+        # Garante colunas de ownership + juridicas de customers (uma vez por tenant apos restart)
+        tcode = getattr(tenant, "tenant_code", "")
+        await ensure_ownership_columns(conn, tcode)
+        await ensure_customer_columns(conn, tcode)
         return conn
     except Exception as e:
         logger.error(f"Erro ao conectar ao banco do tenant {tenant.tenant_code}: {e}")
@@ -868,6 +914,17 @@ async def create_customer(
                 birth_date = dt.strptime(customer.birth_date, "%Y-%m-%d").date()
             except:
                 pass
+        # Parse rg_issue_date se vier como string
+        rg_issue_date = None
+        if customer.rg_issue_date:
+            try:
+                from datetime import datetime as dt
+                rg_issue_date = dt.strptime(customer.rg_issue_date, "%Y-%m-%d").date()
+            except:
+                pass
+
+        # Garante colunas juridicas (tenants antigos)
+        await ensure_customer_columns(conn, getattr(tenant, "tenant_code", ""))
 
         # INSERT compatível com schema legado (enterprise_system)
         row = await conn.fetchrow("""
@@ -879,6 +936,8 @@ async def create_customer(
                 neighborhood, city, state, zip_code, country,
                 birth_date, customer_type, customer_status,
                 notes, credit_limit, payment_term_days, is_active,
+                nationality, marital_status, profession, birth_city, birth_state,
+                mother_name, father_name, rg_issuer, rg_issue_date,
                 created_at, updated_at
             )
             VALUES (
@@ -889,6 +948,8 @@ async def create_customer(
                 $16, $17, $18, $19, $20,
                 $21, $22, $23,
                 $24, $25, $26, $27,
+                $28, $29, $30, $31, $32,
+                $33, $34, $35, $36,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             RETURNING *
@@ -919,7 +980,16 @@ async def create_customer(
             customer.notes,
             customer.credit_limit or 0,
             customer.payment_term_days or 30,
-            customer.is_active if customer.is_active is not None else True
+            customer.is_active if customer.is_active is not None else True,
+            customer.nationality,
+            customer.marital_status,
+            customer.profession,
+            customer.birth_city,
+            customer.birth_state,
+            customer.mother_name,
+            customer.father_name,
+            customer.rg_issuer,
+            rg_issue_date
         )
 
         result = row_to_dict(row)
@@ -965,6 +1035,17 @@ async def update_customer(
                 birth_date = dt.strptime(customer.birth_date, "%Y-%m-%d").date()
             except:
                 pass
+        # Parse rg_issue_date se vier como string
+        rg_issue_date = None
+        if customer.rg_issue_date:
+            try:
+                from datetime import datetime as dt
+                rg_issue_date = dt.strptime(customer.rg_issue_date, "%Y-%m-%d").date()
+            except:
+                pass
+
+        # Garante colunas juridicas (tenants antigos)
+        await ensure_customer_columns(conn, getattr(tenant, "tenant_code", ""))
 
         # UPDATE compatível com schema legado
         row = await conn.fetchrow("""
@@ -976,6 +1057,9 @@ async def update_customer(
                 neighborhood = $16, city = $17, state = $18, zip_code = $19, country = $20,
                 birth_date = $21, customer_type = $22, customer_status = $23,
                 notes = $24, credit_limit = $25, payment_term_days = $26, is_active = $27,
+                nationality = $28, marital_status = $29, profession = $30,
+                birth_city = $31, birth_state = $32, mother_name = $33, father_name = $34,
+                rg_issuer = $35, rg_issue_date = $36,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id::text = $1
             RETURNING *
@@ -1006,7 +1090,16 @@ async def update_customer(
             customer.notes,
             customer.credit_limit or 0,
             customer.payment_term_days or 30,
-            customer.is_active if customer.is_active is not None else True
+            customer.is_active if customer.is_active is not None else True,
+            customer.nationality,
+            customer.marital_status,
+            customer.profession,
+            customer.birth_city,
+            customer.birth_state,
+            customer.mother_name,
+            customer.father_name,
+            customer.rg_issuer,
+            rg_issue_date
         )
 
         if not row:

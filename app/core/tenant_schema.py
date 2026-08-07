@@ -130,8 +130,18 @@ CREATE TABLE IF NOT EXISTS customers (
     -- Documentos
     cpf_cnpj VARCHAR(20) UNIQUE,
     rg VARCHAR(20),
+    rg_issuer VARCHAR(100),
+    rg_issue_date DATE,
     birth_date DATE,
     gender VARCHAR(20),
+    -- Dados pessoais / para documentos jurídicos
+    nationality VARCHAR(100),
+    marital_status VARCHAR(50),
+    profession VARCHAR(150),
+    birth_city VARCHAR(150),
+    birth_state VARCHAR(2),
+    mother_name VARCHAR(255),
+    father_name VARCHAR(255),
     -- Endereço
     address VARCHAR(200),
     address_number VARCHAR(20),
